@@ -19,7 +19,6 @@ import 'package:m_mobilnost/data/models/bus_line.dart';
 import 'package:m_mobilnost/data/models/bus_position.dart';
 import 'package:m_mobilnost/data/models/occupancy.dart';
 import 'package:m_mobilnost/data/models/trip_plan.dart';
-import 'package:m_mobilnost/data/models/user_profile.dart';
 import 'package:m_mobilnost/data/repositories/auth_repository.dart';
 import 'package:m_mobilnost/data/seed/seed_lines.dart';
 import 'package:m_mobilnost/data/seed/seed_stops.dart';
