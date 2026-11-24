@@ -243,19 +243,108 @@
       return false;
     };
 
-    window.__marpromSyncGoogleMap = async function(hostEl, payloadJson) {
-      try {
-        const payload = JSON.parse(payloadJson);
-        if (!hostEl) return;
-        hostEl.__marpromLatestPayload = payload;
+    // Maribor service area: points outside it (e.g. 0,0 placeholders or stale
+    // GPS fixes) are still drawn but never used for camera fitting, so a single
+    // bad coordinate cannot zoom the map out onto an empty area.
+    window.__marpromFitArea = { south: 46.30, north: 46.80, west: 15.30, east: 16.05 };
 
+    function marpromInFitArea(pt) {
+      const a = window.__marpromFitArea;
+      return !!pt && typeof pt.lat === 'number' && typeof pt.lng === 'number' &&
+        pt.lat >= a.south && pt.lat <= a.north && pt.lng >= a.west && pt.lng <= a.east;
+    }
+
+    // Never point the camera at an invalid coordinate (lat > 90 makes Google
+    // Maps clamp to the pole and the map looks empty).
+    function marpromSafeCenter(pt) {
+      return marpromInFitArea(pt) ? { lat: pt.lat, lng: pt.lng } : { lat: 46.5547, lng: 15.6459 };
+    }
+
+    function marpromHostSized(hostEl) {
+      return hostEl.isConnected && hostEl.clientWidth >= 80 && hostEl.clientHeight >= 80;
+    }
+
+    // Frames `fit` (bounds + point count + target tilt/heading) once the host
+    // has a real size. Runs on the next animation frame after a resize so
+    // Google Maps has measured the container (fitBounds on a 0-sized or
+    // stale-sized map produces a wrong zoom/center).
+    function marpromApplyFit(st, hostEl, fit) {
+      if (!marpromHostSized(hostEl)) {
+        st.pendingFit = fit;
+        return;
+      }
+      // A vector map that was created off-screen (below the fold) is only
+      // initialised once it becomes visible; fitBounds before that is ignored.
+      // Keep the request pending and apply it on the map's first 'idle'.
+      if (!st.map.getProjection()) {
+        st.pendingFit = fit;
+        if (!st.waitingForProjection) {
+          st.waitingForProjection = true;
+          google.maps.event.addListenerOnce(st.map, 'idle', function() {
+            st.waitingForProjection = false;
+            if (st.pendingFit) marpromApplyFit(st, hostEl, st.pendingFit);
+          });
+        }
+        return;
+      }
+      st.pendingFit = null;
+      st.lastFitSig = fit.sig;
+      google.maps.event.trigger(st.map, 'resize');
+      requestAnimationFrame(function() {
+        if (st.lastFitSig !== fit.sig) return;
+        if (fit.count === 1) {
+          st.map.setCenter(fit.bounds.getCenter());
+          st.map.setZoom(15.5);
+        } else {
+          const minSide = Math.min(hostEl.clientWidth, hostEl.clientHeight);
+          const pad = Math.max(24, Math.min(56, Math.round(minSide * 0.08)));
+          st.map.fitBounds(fit.bounds, pad);
+        }
+        google.maps.event.addListenerOnce(st.map, 'idle', function() {
+          const z = st.map.getZoom();
+          if (typeof z === 'number' && z > 16.2) st.map.setZoom(16.2);
+          if (typeof z === 'number' && z < 11.2) st.map.setZoom(11.2);
+          if (fit.tilt > 0 && typeof st.map.setTilt === 'function') st.map.setTilt(fit.tilt);
+          if (fit.tilt > 0 && typeof st.map.setHeading === 'function') st.map.setHeading(fit.heading || 0);
+        });
+      });
+    }
+
+    // Public entry point called from Dart. Calls are coalesced per host so
+    // overlapping async invocations never create two maps on one element or
+    // apply an older payload after a newer one.
+    window.__marpromSyncGoogleMap = function(hostEl, payloadJson) {
+      if (!hostEl) return;
+      try {
+        hostEl.__marpromLatestPayload = JSON.parse(payloadJson);
+      } catch (e) {
+        return;
+      }
+      if (hostEl.__marpromSyncRunning) return;
+      hostEl.__marpromSyncRunning = true;
+      (async function() {
+        try {
+          while (hostEl.__marpromLatestPayload) {
+            const payload = hostEl.__marpromLatestPayload;
+            hostEl.__marpromLatestPayload = null;
+            await marpromSyncOnce(hostEl, payload);
+          }
+        } finally {
+          hostEl.__marpromSyncRunning = false;
+        }
+      })();
+    };
+
+    async function marpromSyncOnce(hostEl, payload) {
+      try {
+        hostEl.__marpromLastPayload = payload;
         const ready = await window.__marpromWaitForGoogleMaps();
         if (!ready) return;
         const { Map, InfoWindow } = await window.google.maps.importLibrary('maps');
 
         if (!hostEl.__marpromState) {
           const mapOptions = {
-            center: payload.center || { lat: 46.5547, lng: 15.6459 },
+            center: marpromSafeCenter(payload.center),
             zoom: payload.zoom || 13.6,
             mapId: payload.mapId || 'DEMO_MAP_ID',
             renderingType: google.maps.RenderingType ? google.maps.RenderingType.VECTOR : undefined,
@@ -269,7 +358,11 @@
             fullscreenControl: false,
             zoomControl: true,
             rotateControl: true,
+            // Wheel and one-finger drag act on the map directly (no ctrl
+            // needed); the Dart host element stops these events from also
+            // reaching the Flutter page scroll view.
             gestureHandling: 'greedy',
+            scrollwheel: true,
           };
           const map = new Map(hostEl, mapOptions);
           const state = {
@@ -279,28 +372,14 @@
             infoWindow: new InfoWindow(),
             lastCenterSig: '',
             lastFitSig: '',
-            pendingBounds: null,
-            pendingFitSig: '',
-            isDestroyed: false,
+            pendingFit: null,
           };
 
           if (typeof ResizeObserver !== 'undefined') {
             const ro = new ResizeObserver(function() {
-              if (!hostEl.isConnected) return;
-              if (hostEl.clientWidth >= 80 && hostEl.clientHeight >= 80) {
-                google.maps.event.trigger(state.map, 'resize');
-                if (state.pendingBounds && state.lastFitSig !== state.pendingFitSig) {
-                  state.lastFitSig = state.pendingFitSig;
-                  const b = state.pendingBounds;
-                  state.pendingBounds = null;
-                  state.map.fitBounds(b, 44);
-                  google.maps.event.addListenerOnce(state.map, 'idle', function() {
-                    const z = state.map.getZoom();
-                    if (typeof z === 'number' && z > 16.2) state.map.setZoom(16.2);
-                    if (typeof z === 'number' && z < 11.2) state.map.setZoom(12.8);
-                  });
-                }
-              }
+              if (!marpromHostSized(hostEl)) return;
+              google.maps.event.trigger(state.map, 'resize');
+              if (state.pendingFit) marpromApplyFit(state, hostEl, state.pendingFit);
             });
             ro.observe(hostEl);
             state.resizeObserver = ro;
@@ -316,15 +395,16 @@
         // Camera control: 3D flyover mode takes precedence over static fitBounds.
         if (payload.camera3D && payload.camera3D.active) {
           const cam = payload.camera3D;
+          st.pendingFit = null;
           if (typeof st.map.moveCamera === 'function') {
             st.map.moveCamera({
-              center: { lat: cam.lat, lng: cam.lng },
+              center: marpromSafeCenter({ lat: cam.lat, lng: cam.lng }),
               zoom: cam.zoom || 16.4,
               tilt: typeof cam.tilt === 'number' ? cam.tilt : 60,
               heading: typeof cam.heading === 'number' ? cam.heading : 0,
             });
           } else {
-            st.map.setCenter({ lat: cam.lat, lng: cam.lng });
+            st.map.setCenter(marpromSafeCenter({ lat: cam.lat, lng: cam.lng }));
             st.map.setZoom(cam.zoom || 16.4);
             st.map.setTilt(typeof cam.tilt === 'number' ? cam.tilt : 60);
             st.map.setHeading(typeof cam.heading === 'number' ? cam.heading : 0);
@@ -344,15 +424,21 @@
         for (const m of st.markers) m.setMap(null);
         st.markers = [];
 
-        const bounds = new google.maps.LatLngBounds();
-        let allPointCount = 0;
+        // Route polylines define the camera frame; markers are used only when
+        // there is no route (e.g. a stop-only or bus-only view).
+        const routeBounds = new google.maps.LatLngBounds();
+        let routePointCount = 0;
+        const markerBounds = new google.maps.LatLngBounds();
+        let markerPointCount = 0;
 
         for (const line of (payload.polylines || [])) {
           if (!line.points || line.points.length < 2) continue;
           const path = line.points;
           for (const pt of path) {
-            bounds.extend(pt);
-            allPointCount++;
+            if (marpromInFitArea(pt)) {
+              routeBounds.extend(pt);
+              routePointCount++;
+            }
           }
           const w = Number(line.strokeWidth) || 5;
           if (line.isDashed) {
@@ -399,8 +485,10 @@
 
         for (const mk of (payload.markers || [])) {
           const pos = { lat: mk.lat, lng: mk.lng };
-          bounds.extend(pos);
-          allPointCount++;
+          if (marpromInFitArea(pos)) {
+            markerBounds.extend(pos);
+            markerPointCount++;
+          }
           let icon;
           if (mk.isBus) {
             const rawCode = (mk.shortLabel || (mk.label || '').split(' ')[0] || 'BUS').substring(0, 4);
@@ -408,13 +496,23 @@
             const bg = mk.color || '#C8102E';
             const a11yMark = mk.isAccessible ? '&#9855;' : '';
             const w = mk.isAccessible ? 48 : 40;
-            const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + w + '" height="24" viewBox="0 0 ' + w + ' 24">' +
+            // Optional occupancy fill bar under the pill (load % in semantic colour).
+            const hasOcc = typeof mk.occupancyPercent === 'number';
+            const occPct = hasOcc ? Math.max(0, Math.min(100, mk.occupancyPercent)) : 0;
+            const occColor = /^#[0-9a-fA-F]{6}$/.test(mk.occupancyColor || '') ? mk.occupancyColor : '#64748B';
+            const h = hasOcc ? 31 : 24;
+            const occBar = hasOcc
+              ? '<rect x="3" y="24" width="' + (w - 6) + '" height="6" rx="3" fill="#FFFFFF" stroke="#0F172A" stroke-opacity="0.35" stroke-width="1"/>' +
+                '<rect x="4" y="25" width="' + Math.max(occPct > 0 ? 2 : 0, ((w - 8) * occPct / 100)).toFixed(1) + '" height="4" rx="2" fill="' + occColor + '"/>'
+              : '';
+            const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '">' +
               '<rect x="1" y="1" width="' + (w - 2) + '" height="22" rx="8" fill="' + bg + '" stroke="#FFFFFF" stroke-width="2"/>' +
               '<text x="' + (w / 2) + '" y="16" font-family="Arial,sans-serif" font-size="11" font-weight="800" fill="#FFFFFF" text-anchor="middle">' + safeCode + (a11yMark ? ' ' + a11yMark : '') + '</text>' +
+              occBar +
               '</svg>';
             icon = {
               url: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(svg),
-              scaledSize: new google.maps.Size(w, 24),
+              scaledSize: new google.maps.Size(w, h),
               anchor: new google.maps.Point(w / 2, 12),
             };
           } else {
@@ -444,26 +542,27 @@
         }
 
         if (!(payload.camera3D && payload.camera3D.active)) {
-          if (payload.fitBounds && allPointCount >= 2) {
-            if (st.lastFitSig !== payload.fitSignature) {
-              if (hostEl.clientWidth >= 80 && hostEl.clientHeight >= 80) {
-                st.lastFitSig = payload.fitSignature;
-                st.pendingBounds = null;
-                st.map.fitBounds(bounds, 44);
-                google.maps.event.addListenerOnce(st.map, 'idle', function() {
-                  const z = st.map.getZoom();
-                  if (typeof z === 'number' && z > 16.2) st.map.setZoom(16.2);
-                  if (typeof z === 'number' && z < 11.2) st.map.setZoom(12.8);
-                });
-              } else {
-                st.pendingBounds = bounds;
-                st.pendingFitSig = payload.fitSignature;
-              }
+          const useRoute = routePointCount >= 2;
+          const fitCount = useRoute ? routePointCount : markerPointCount;
+          const fitBounds = useRoute ? routeBounds : markerBounds;
+          if (payload.fitBounds && fitCount >= 1) {
+            if (st.pendingFit && st.pendingFit.sig === payload.fitSignature) {
+              // Same framing request still waiting for a size: keep newest geometry.
+              st.pendingFit.bounds = fitBounds;
+              st.pendingFit.count = fitCount;
+            } else if (st.lastFitSig !== payload.fitSignature) {
+              marpromApplyFit(st, hostEl, {
+                sig: payload.fitSignature,
+                bounds: fitBounds,
+                count: fitCount,
+                tilt: payload.tilt || 0,
+                heading: payload.heading || 0,
+              });
             }
           } else if (payload.center) {
-            const centerSig = payload.center.lat.toFixed(5) + ',' + payload.center.lng.toFixed(5) + ',' + (payload.zoom || 13.6);
+            const centerSig = Number(payload.center.lat).toFixed(5) + ',' + Number(payload.center.lng).toFixed(5) + ',' + (payload.zoom || 13.6);
             if (st.lastCenterSig !== centerSig) {
-              st.map.setCenter(payload.center);
+              st.map.setCenter(marpromSafeCenter(payload.center));
               if (payload.zoom) st.map.setZoom(payload.zoom);
               st.lastCenterSig = centerSig;
             }
@@ -472,7 +571,7 @@
       } catch (e) {
         // Ignore gracefully when Maps JS API cannot load offline.
       }
-    };
+    }
   </script>
 </head>
 <body>

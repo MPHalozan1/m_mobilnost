@@ -35,6 +35,8 @@ class BusOccupancyCutaway extends StatefulWidget {
     this.hasAudioAnnouncements = true,
     this.compact = false,
     this.onReportCrowd,
+    this.statusLabel,
+    this.statusColor,
   });
 
   /// Convenience constructor from a live [BusPosition] snapshot.
@@ -43,6 +45,8 @@ class BusOccupancyCutaway extends StatefulWidget {
     Key? key,
     bool compact = false,
     VoidCallback? onReportCrowd,
+    String? statusLabel,
+    Color? statusColor,
   }) {
     return BusOccupancyCutaway(
       key: key,
@@ -60,6 +64,8 @@ class BusOccupancyCutaway extends StatefulWidget {
       hasAudioAnnouncements: bus.hasAudioAnnouncements,
       compact: compact,
       onReportCrowd: onReportCrowd,
+      statusLabel: statusLabel,
+      statusColor: statusColor,
     );
   }
 
@@ -105,6 +111,13 @@ class BusOccupancyCutaway extends StatefulWidget {
   /// Optional callback triggered when the user taps "Prijavi zasedenost".
   final VoidCallback? onReportCrowd;
 
+  /// Optional occupancy label overriding the built-in 50 % / 80 % wording, so
+  /// a screen can keep the cutaway consistent with its own occupancy scale.
+  final String? statusLabel;
+
+  /// Optional accent colour overriding the built-in occupancy colour.
+  final Color? statusColor;
+
   @override
   State<BusOccupancyCutaway> createState() => _BusOccupancyCutawayState();
 }
@@ -132,7 +145,7 @@ class _BusOccupancyCutawayState extends State<BusOccupancyCutaway> {
     final pax = widget.passengerCount.clamp(0, cap);
     final ratio = (pax / cap).clamp(0.0, 1.0);
     final percent = (ratio * 100).round();
-    final accent = _statusColor(ratio);
+    final accent = widget.statusColor ?? _statusColor(ratio);
     final showBreakdown = _expanded || _hovered;
 
     return Semantics(
@@ -209,7 +222,7 @@ class _BusOccupancyCutawayState extends State<BusOccupancyCutaway> {
                         border: Border.all(color: accent.withValues(alpha: 0.4)),
                       ),
                       child: Text(
-                        '$pax / $cap ($percent%) • ${_statusLabel(ratio)}',
+                        '$pax / $cap ($percent%) • ${widget.statusLabel ?? _statusLabel(ratio)}',
                         style: TextStyle(
                           color: accent,
                           fontSize: 11.5,

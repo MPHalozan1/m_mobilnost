@@ -229,4 +229,107 @@ class MarpromWebStrings {
         de: 'Android-APK herunterladen (m-mobilnost.apk)',
         sr: 'Preuzmi Android APK (m-mobilnost.apk)',
       );
+
+  //**********************************************
+  // Live page: road geometry source & occupancy *
+  //**********************************************
+
+  String _slLines(int n) {
+    final mod = n % 100;
+    if (mod == 1) return '$n linija';
+    if (mod == 2) return '$n liniji';
+    if (mod == 3 || mod == 4) return '$n linije';
+    return '$n linij';
+  }
+
+  String _srLines(int n) {
+    final mod10 = n % 10;
+    final mod100 = n % 100;
+    if (mod10 == 1 && mod100 != 11) return '$n linija';
+    if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) {
+      return '$n linije';
+    }
+    return '$n linija';
+  }
+
+  /// Truthful source line above the live map: bundled OSM road geometry.
+  String liveRoadRoutesSummary(int lineCount) => _pick(
+        sl: 'Cestne trase linij (OpenStreetMap, avtobusno usmerjanje) • ${_slLines(lineCount)}',
+        en: 'Line road routes (OpenStreetMap, bus routing) • $lineCount ${lineCount == 1 ? 'line' : 'lines'}',
+        de: 'Straßenverläufe der Linien (OpenStreetMap, Bus-Routing) • $lineCount ${lineCount == 1 ? 'Linie' : 'Linien'}',
+        sr: 'Putne trase linija (OpenStreetMap, autobusko rutiranje) • ${_srLines(lineCount)}',
+      );
+
+  /// Source line above the live map when one line is focused.
+  String liveRoadRouteFocused(String lineCode, String distance, String duration) =>
+      _pick(
+        sl: 'Cestna trasa linije $lineCode (OpenStreetMap, avtobusno usmerjanje) • $distance, ~$duration po voznem redu',
+        en: 'Road route of line $lineCode (OpenStreetMap, bus routing) • $distance, ~$duration scheduled',
+        de: 'Straßenverlauf der Linie $lineCode (OpenStreetMap, Bus-Routing) • $distance, ~$duration laut Fahrplan',
+        sr: 'Putna trasa linije $lineCode (OpenStreetMap, autobusko rutiranje) • $distance, ~$duration po redu vožnje',
+      );
+
+  String get liveOccupancyTitle => _pick(
+        sl: 'Zasedenost avtobusov v živo',
+        en: 'Live bus occupancy',
+        de: 'Live-Auslastung der Busse',
+        sr: 'Popunjenost autobusa uživo',
+      );
+
+  String get liveOccupancyHint => _pick(
+        sl: 'Razvrščeno od najbolj polnih. Izberite avtobus za podroben prikaz sedežev in stojišč.',
+        en: 'Sorted from fullest. Select a bus to see its seats and standing room in detail.',
+        de: 'Nach Auslastung sortiert. Bus wählen, um Sitz- und Stehplätze im Detail zu sehen.',
+        sr: 'Poređano od najpunijih. Izaberite autobus za detaljan prikaz sedišta i stajanja.',
+      );
+
+  String get simulatedShort => _pick(
+        sl: 'simulirano',
+        en: 'simulated',
+        de: 'simuliert',
+        sr: 'simulirano',
+      );
+
+  String get simulatedTooltip => _pick(
+        sl: 'Položaj in število potnikov izračuna simulator voznega parka (ni APC telemetrije v živo).',
+        en: 'Position and passenger count come from the fleet simulator (no live APC telemetry).',
+        de: 'Position und Fahrgastzahl stammen aus dem Flottensimulator (keine Live-APC-Daten).',
+        sr: 'Položaj i broj putnika računa simulator voznog parka (bez APC telemetrije uživo).',
+      );
+
+  String seatedStanding(int seated, int seatedCap, int standing, int standingCap) =>
+      _pick(
+        sl: 'Sedi $seated/$seatedCap • stoji $standing/$standingCap',
+        en: 'Seated $seated/$seatedCap • standing $standing/$standingCap',
+        de: 'Sitzend $seated/$seatedCap • stehend $standing/$standingCap',
+        sr: 'Sedi $seated/$seatedCap • stoji $standing/$standingCap',
+      );
+
+  String get showAllBuses => _pick(
+        sl: 'Prikaži vse avtobuse',
+        en: 'Show all buses',
+        de: 'Alle Busse anzeigen',
+        sr: 'Prikaži sve autobuse',
+      );
+
+  String get showFewerBuses => _pick(
+        sl: 'Prikaži manj',
+        en: 'Show fewer',
+        de: 'Weniger anzeigen',
+        sr: 'Prikaži manje',
+      );
+
+  String get selectedBus => _pick(
+        sl: 'izbran',
+        en: 'selected',
+        de: 'ausgewählt',
+        sr: 'izabran',
+      );
+
+  String get showSeatDetail => _pick(
+        sl: 'Prikaži sedeže in stojišča',
+        en: 'Show seats and standing room',
+        de: 'Sitz- und Stehplätze anzeigen',
+        sr: 'Prikaži sedišta i stajanja',
+      );
 }

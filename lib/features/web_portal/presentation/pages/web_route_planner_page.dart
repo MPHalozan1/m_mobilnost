@@ -215,7 +215,6 @@ class _WebRoutePlannerPageState extends ConsumerState<WebRoutePlannerPage> {
         ? _destAddressController.text.trim()
         : 'Pohorska vzpenjaca, Maribor';
 
-    final googleRoutesMap = ref.watch(googleLineRoutesProvider);
     final selectedBusOption = (!_useCustomAddress && _busOptions.isNotEmpty)
         ? _busOptions[_selectedOptionIndex.clamp(0, _busOptions.length - 1)]
         : null;
@@ -227,17 +226,8 @@ class _WebRoutePlannerPageState extends ConsumerState<WebRoutePlannerPage> {
     if (selectedBusOption != null) {
       for (var i = 0; i < selectedBusOption.legs.length; i++) {
         final leg = selectedBusOption.legs[i];
-        var pts = leg.polyline;
-        if (leg.type == TripLegType.bus &&
-            leg.lineId != null &&
-            leg.directionId != null &&
-            pts.length >= 2) {
-          final full = googleRoutesMap['${leg.lineId}|${leg.directionId}']
-              ?.polylinePoints;
-          if (full != null && full.length >= 2) {
-            pts = slicePolylineBetweenPoints(full, pts.first, pts.last);
-          }
-        }
+        // Bus legs on a known line follow the bundled bus road geometry.
+        final pts = roadPathForBusLeg(leg);
         if (pts.isEmpty) continue;
         allMapPoints.addAll(pts);
         final isWalk = leg.type == TripLegType.walk;

@@ -19,7 +19,9 @@ import '../../../../data/repositories/repository_providers.dart';
 import '../../../../data/seed/seed_lines.dart';
 import '../../../../data/seed/seed_stops.dart';
 import '../../../live_tracker/domain/fleet_statistics_provider.dart';
+import '../../../../core/widgets/occupancy_strip.dart';
 import '../marprom_web_strings.dart';
+import '../widgets/live_bus_occupancy_card.dart';
 
 /// Marprom Web Live Map & Fleet Statistics Portal (`/live`).
 class WebLiveStatsPage extends ConsumerStatefulWidget {
@@ -43,8 +45,42 @@ class WebLiveStatsPage extends ConsumerStatefulWidget {
 class _WebLiveStatsPageState extends ConsumerState<WebLiveStatsPage> {
   String? _selectedLineFilter;
   String? _focusedVehicleId;
+
+  /// Direction of the focused bus: simulated runs of opposite directions can
+  /// share a vehicle ID, so focus matches vehicle + direction when known.
+  String? _focusedDirectionId;
   int _tableFilter = 0; // 0: All, 1: G1-G6, 2: P7-P19, 3: Electric, 4: Crowded (>=65%)
   bool _accessibleOnly = false;
+  bool _showAllOccupancy = false;
+
+  /// Collapsed number of cards in the live occupancy panel.
+  static const int _occupancyPreviewCount = 8;
+
+  /// Every vehicle on this page comes from the deterministic `BusSimulator`
+  /// (via `MockLiveBusRepository`); there is no live APC feed yet.
+  static bool _isSimulated(BusPosition bus) => true;
+
+  bool _isFocused(BusPosition bus) =>
+      bus.vehicleId == _focusedVehicleId &&
+      (_focusedDirectionId == null || bus.directionId == _focusedDirectionId);
+
+  void _focusBus(BusPosition bus) {
+    setState(() {
+      _focusedVehicleId = bus.vehicleId;
+      _focusedDirectionId = bus.directionId;
+    });
+    if (!isFlutterTestEnvironment) {
+      ref.read(googleLineRoutesProvider.notifier).ensureLineLoaded(bus.lineId);
+    }
+  }
+
+  void _clearFocus() => setState(() {
+        _focusedVehicleId = null;
+        _focusedDirectionId = null;
+      });
+
+  void _toggleFocus(BusPosition bus) =>
+      _isFocused(bus) ? _clearFocus() : _focusBus(bus);
 
   @override
   void initState() {
@@ -92,7 +128,7 @@ class _WebLiveStatsPageState extends ConsumerState<WebLiveStatsPage> {
     BusPosition? focusedBus;
     if (_focusedVehicleId != null) {
       for (final b in liveBuses) {
-        if (b.vehicleId == _focusedVehicleId) {
+        if (_isFocused(b)) {
           focusedBus = b;
           break;
         }
@@ -146,11 +182,16 @@ class _WebLiveStatsPageState extends ConsumerState<WebLiveStatsPage> {
           position: bus.position,
           shortLabel: bus.lineCode,
           label:
-              '${bus.lineCode} (${bus.vehicleId}) • ${bus.passengerCount}/${bus.vehicleCapacity} ${ws.passengersWord} (${bus.loadPercent}%) → ${bus.nextStopName}',
+              '${bus.lineCode} (${bus.vehicleId}) • ${liveOccupancyLabel(context, liveBusOccupancyLevel(bus))}: '
+              '${livePassengerCountText(bus, ws)} → ${bus.nextStopName}'
+              '${_isSimulated(bus) ? ' • ${ws.simulatedShort}' : ''}',
           isBus: true,
           isWheelchairAccessible: bus.isWheelchairAccessible,
           headingDegrees: bus.headingDegrees,
           color: seedLinesById[bus.lineId]?.color ?? MarpromColors.marpromRed,
+          occupancyPercent: bus.loadPercent,
+          occupancyColor:
+              liveOccupancyColor(context, liveBusOccupancyLevel(bus)),
         ),
       if (highlightedDirection != null && highlightedLine != null)
         for (final stopId in highlightedDirection.stopIds)
@@ -298,8 +339,21 @@ class _WebLiveStatsPageState extends ConsumerState<WebLiveStatsPage> {
                               ),
                               Text(
                                 focusedGoogleRoute != null
-                                    ? 'Google Routes API v2 • ${highlightedLineId ?? ''} (${focusedGoogleRoute.formattedDistanceKm}, ${focusedGoogleRoute.formattedDurationMinutes})'
-                                    : 'Google Routes API v2 • ${googleRoutesMap.values.where((r) => r.isLiveApi).length} živih cestnih tras sinhroniziranih',
+                                    ? ws.liveRoadRouteFocused(
+                                        highlightedLine?.code ??
+                                            highlightedLineId ??
+                                            '',
+                                        focusedGoogleRoute.formattedDistanceKm,
+                                        focusedGoogleRoute
+                                            .formattedDurationMinutes,
+                                      )
+                                    : ws.liveRoadRoutesSummary(
+                                        {
+                                          for (final key
+                                              in googleRoutesMap.keys)
+                                            key.split('|').first,
+                                        }.length,
+                                      ),
                                 style: Theme.of(context)
                                     .textTheme
                                     .bodySmall
@@ -368,35 +422,45 @@ class _WebLiveStatsPageState extends ConsumerState<WebLiveStatsPage> {
                                       ),
                                     ),
                                     const SizedBox(width: 12),
-                                    Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        Text(
-                                          '${focusedBus.vehicleId} • ${focusedBus.directionName}',
-                                          style: const TextStyle(
-                                            color: Colors.white,
-                                            fontWeight: FontWeight.w800,
+                                    Flexible(
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Wrap(
+                                            spacing: 8,
+                                            runSpacing: 4,
+                                            crossAxisAlignment:
+                                                WrapCrossAlignment.center,
+                                            children: [
+                                              Text(
+                                                '${focusedBus.vehicleId} • ${focusedBus.directionName}',
+                                                style: const TextStyle(
+                                                  color: Colors.white,
+                                                  fontWeight: FontWeight.w800,
+                                                ),
+                                              ),
+                                              if (_isSimulated(focusedBus))
+                                                LiveSimulatedPill(ws: ws),
+                                            ],
                                           ),
-                                        ),
-                                        Text(
-                                          'Naslednja postaja: ${focusedBus.nextStopName} (${(focusedBus.etaToNextStopSeconds / 60).ceil()} min) • '
-                                          '${focusedBus.passengerCount}/${focusedBus.vehicleCapacity} ${ws.passengersWord} (${focusedBus.loadPercent}%) • '
-                                          '${focusedBus.speedKmh} km/h'
-                                          '${focusedGoogleRoute != null ? ' • Trasa: ${focusedGoogleRoute.formattedDistanceKm}' : ''}',
-                                          style: const TextStyle(
-                                            color: Color(0xFFCBD5E1),
-                                            fontSize: 12,
+                                          Text(
+                                            'Naslednja postaja: ${focusedBus.nextStopName} (${(focusedBus.etaToNextStopSeconds / 60).ceil()} min) • '
+                                            '${focusedBus.passengerCount}/${focusedBus.vehicleCapacity} ${ws.passengersWord} (${focusedBus.loadPercent}%) • '
+                                            '${focusedBus.speedKmh} km/h'
+                                            '${focusedGoogleRoute != null ? ' • Trasa: ${focusedGoogleRoute.formattedDistanceKm}' : ''}',
+                                            style: const TextStyle(
+                                              color: Color(0xFFCBD5E1),
+                                              fontSize: 12,
+                                            ),
                                           ),
-                                        ),
-                                      ],
+                                        ],
+                                      ),
                                     ),
                                   ],
                                 ),
                                 TextButton(
-                                  onPressed: () => setState(
-                                    () => _focusedVehicleId = null,
-                                  ),
+                                  onPressed: _clearFocus,
                                   child: const Text(
                                     'Skrij fokus',
                                     style: TextStyle(color: Colors.white),
@@ -405,13 +469,37 @@ class _WebLiveStatsPageState extends ConsumerState<WebLiveStatsPage> {
                               ],
                             ),
                             const SizedBox(height: 12),
-                            BusOccupancyCutaway.fromBusPosition(focusedBus),
+                            BusOccupancyCutaway.fromBusPosition(
+                              focusedBus,
+                              statusLabel: liveOccupancyLabel(
+                                context,
+                                liveBusOccupancyLevel(focusedBus),
+                              ),
+                              statusColor: liveOccupancyColor(
+                                context,
+                                liveBusOccupancyLevel(focusedBus),
+                              ),
+                            ),
                           ],
                         ),
                       ),
                     ],
                   ],
                 ),
+              ),
+              const SizedBox(height: 16),
+
+              // Live per-bus occupancy panel (glanceable cards, tap = detail)
+              _LiveOccupancyPanel(
+                buses: visibleBuses,
+                ws: ws,
+                isFocused: _isFocused,
+                showAll: _showAllOccupancy,
+                previewCount: _occupancyPreviewCount,
+                isSimulated: _isSimulated,
+                onToggleShowAll: () =>
+                    setState(() => _showAllOccupancy = !_showAllOccupancy),
+                onSelect: _toggleFocus,
               ),
               const SizedBox(height: 24),
 
@@ -582,9 +670,10 @@ class _WebLiveStatsPageState extends ConsumerState<WebLiveStatsPage> {
                         SingleChildScrollView(
                           scrollDirection: Axis.horizontal,
                           child: DataTable(
+                            showCheckboxColumn: false,
                             headingRowHeight: 44,
-                            dataRowMinHeight: 58,
-                            dataRowMaxHeight: 68,
+                            dataRowMinHeight: 64,
+                            dataRowMaxHeight: 84,
                             columns: const [
                               DataColumn(label: Text('Linija & Vozilo')),
                               DataColumn(label: Text('Smer & Naslednja postaja')),
@@ -597,7 +686,8 @@ class _WebLiveStatsPageState extends ConsumerState<WebLiveStatsPage> {
                             rows: [
                               for (final bus in visibleBuses)
                                 DataRow(
-                                  selected: _focusedVehicleId == bus.vehicleId,
+                                  selected: _isFocused(bus),
+                                  onSelectChanged: (_) => _toggleFocus(bus),
                                   cells: [
                                     DataCell(
                                       Row(
@@ -693,36 +783,24 @@ class _WebLiveStatsPageState extends ConsumerState<WebLiveStatsPage> {
                                     ),
                                     DataCell(
                                       SizedBox(
-                                        width: 170,
+                                        width: 200,
                                         child: Column(
                                           crossAxisAlignment:
                                               CrossAxisAlignment.start,
                                           mainAxisAlignment:
                                               MainAxisAlignment.center,
                                           children: [
+                                            OccupancyStrip(
+                                              level:
+                                                  liveBusOccupancyLevel(bus),
+                                              compact: true,
+                                            ),
+                                            const SizedBox(height: 4),
                                             Text(
-                                              '${bus.passengerCount} / ${bus.vehicleCapacity} ${ws.passengersWord} (${bus.loadPercent}%)',
+                                              livePassengerCountText(bus, ws),
                                               style: const TextStyle(
                                                 fontWeight: FontWeight.w700,
                                                 fontSize: 12,
-                                              ),
-                                            ),
-                                            const SizedBox(height: 5),
-                                            ClipRRect(
-                                              borderRadius:
-                                                  BorderRadius.circular(5),
-                                              child: LinearProgressIndicator(
-                                                value: (bus.loadPercent / 100)
-                                                    .clamp(0.0, 1.0),
-                                                minHeight: 6,
-                                                color: bus.loadPercent >= 75
-                                                    ? MarpromColors.marpromRed
-                                                    : (bus.loadPercent >= 45
-                                                        ? const Color(
-                                                            0xFFD97706,
-                                                          )
-                                                        : MarpromColors
-                                                            .mobilityGreen),
                                               ),
                                             ),
                                           ],
@@ -755,18 +833,7 @@ class _WebLiveStatsPageState extends ConsumerState<WebLiveStatsPage> {
                                           Icons.my_location_rounded,
                                           color: MarpromColors.marpromRed,
                                         ),
-                                        onPressed: () {
-                                          setState(() => _focusedVehicleId =
-                                              bus.vehicleId);
-                                          if (!isFlutterTestEnvironment) {
-                                            ref
-                                                .read(
-                                                  googleLineRoutesProvider
-                                                      .notifier,
-                                                )
-                                                .ensureLineLoaded(bus.lineId);
-                                          }
-                                        },
+                                        onPressed: () => _focusBus(bus),
                                       ),
                                     ),
                                   ],
@@ -999,6 +1066,138 @@ class _HourlyRidershipChart extends StatelessWidget {
             ),
           ),
       ],
+    );
+  }
+}
+
+/// Glanceable occupancy cards of all visible (simulated) buses, fullest first.
+class _LiveOccupancyPanel extends StatelessWidget {
+  const _LiveOccupancyPanel({
+    required this.buses,
+    required this.ws,
+    required this.isFocused,
+    required this.showAll,
+    required this.previewCount,
+    required this.isSimulated,
+    required this.onToggleShowAll,
+    required this.onSelect,
+  });
+
+  final List<BusPosition> buses;
+  final MarpromWebStrings ws;
+  final bool Function(BusPosition bus) isFocused;
+  final bool showAll;
+  final int previewCount;
+  final bool Function(BusPosition bus) isSimulated;
+  final VoidCallback onToggleShowAll;
+  final ValueChanged<BusPosition> onSelect;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final sorted = List<BusPosition>.from(buses)
+      ..sort((a, b) {
+        final byLoad = b.loadPercent.compareTo(a.loadPercent);
+        return byLoad != 0 ? byLoad : a.vehicleId.compareTo(b.vehicleId);
+      });
+    // Keep the focused bus visible even when the panel is collapsed.
+    var shown = showAll ? sorted : sorted.take(previewCount).toList();
+    if (!showAll) {
+      final focused = sorted.where(isFocused).firstOrNull;
+      if (focused != null && !shown.contains(focused)) {
+        shown = [...shown, focused];
+      }
+    }
+
+    return Card(
+      key: const Key('live_occupancy_panel'),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Wrap(
+              spacing: 10,
+              runSpacing: 6,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                Semantics(
+                  header: true,
+                  child: Text(
+                    '${ws.liveOccupancyTitle} (${buses.length})',
+                    style: Theme.of(context)
+                        .textTheme
+                        .titleMedium
+                        ?.copyWith(fontWeight: FontWeight.w800),
+                  ),
+                ),
+                if (buses.any(isSimulated)) LiveSimulatedPill(ws: ws),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(
+              ws.liveOccupancyHint,
+              style: Theme.of(context)
+                  .textTheme
+                  .bodySmall
+                  ?.copyWith(color: scheme.onSurfaceVariant),
+            ),
+            const SizedBox(height: 14),
+            if (buses.isEmpty)
+              const Padding(
+                padding: EdgeInsets.all(16),
+                child: Text('Trenutno ni aktivnih vozil za izbrani filter.'),
+              )
+            else
+              LayoutBuilder(
+                builder: (context, constraints) {
+                  final w = constraints.maxWidth;
+                  final cols = w >= 1080
+                      ? 4
+                      : (w >= 760 ? 3 : (w >= 480 ? 2 : 1));
+                  const gap = 12.0;
+                  final cardWidth = (w - gap * (cols - 1)) / cols;
+                  return Wrap(
+                    spacing: gap,
+                    runSpacing: gap,
+                    children: [
+                      for (final bus in shown)
+                        SizedBox(
+                          width: cardWidth,
+                          child: LiveBusOccupancyCard(
+                            bus: bus,
+                            ws: ws,
+                            isSimulated: isSimulated(bus),
+                            selected: isFocused(bus),
+                            onTap: () => onSelect(bus),
+                          ),
+                        ),
+                    ],
+                  );
+                },
+              ),
+            if (sorted.length > previewCount) ...[
+              const SizedBox(height: 10),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  onPressed: onToggleShowAll,
+                  icon: Icon(
+                    showAll
+                        ? Icons.expand_less_rounded
+                        : Icons.expand_more_rounded,
+                  ),
+                  label: Text(
+                    showAll
+                        ? ws.showFewerBuses
+                        : '${ws.showAllBuses} (${sorted.length})',
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
     );
   }
 }

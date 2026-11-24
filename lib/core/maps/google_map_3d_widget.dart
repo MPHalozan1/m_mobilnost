@@ -246,8 +246,12 @@ class _GoogleMap3DWidgetState extends ConsumerState<GoogleMap3DWidget>
                   markers: markersWithFlyover,
                   camera3DActive: _followRouteCamera || _flyController.isAnimating,
                   stylePreset: mapStyle,
-                  fitBounds: false,
-                  fitSignature: widget.fitSignature,
+                  // Static 3D view (no flyover) frames the route/markers like 2D;
+                  // the flyover camera takes over while following the route.
+                  fitBounds: widget.fitBounds &&
+                      _activePreset.id == 'initial' &&
+                      !(_followRouteCamera || _flyController.isAnimating),
+                  fitSignature: '3d|${widget.fitSignature}',
                 )
               : GoogleRoadMapPlatformView(
                   center: _activePreset.center,

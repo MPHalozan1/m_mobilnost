@@ -511,8 +511,8 @@ class MockTripRepository implements TripRepository {
     required Departure departure,
     required int rideMin,
   }) {
-    final poly = dir.polyline.length > toIdx
-        ? dir.polyline.sublist(fromIdx, toIdx + 1)
+    final poly = dir.polyline.length > toIdx && fromIdx < toIdx
+        ? dir.roadPathBetween(fromIdx, toIdx)
         : <LatLng>[fromStop.position, toStop.position];
     final boardAt = departure.estimatedTime;
     return TripLeg(

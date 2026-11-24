@@ -30,6 +30,8 @@ class GoogleMap3DMarkerData {
     this.isWheelchairAccessible = true,
     this.headingDegrees = 0.0,
     this.color = const Color(0xFFC8102E),
+    this.occupancyPercent,
+    this.occupancyColor,
   });
 
   /// Unique marker ID.
@@ -55,6 +57,12 @@ class GoogleMap3DMarkerData {
 
   /// Accent color for markers and badges.
   final Color color;
+
+  /// Optional bus load (`0..100`) drawn as a small fill bar under bus pills.
+  final int? occupancyPercent;
+
+  /// Semantic occupancy color for the fill bar (used with [occupancyPercent]).
+  final Color? occupancyColor;
 }
 
 /// Polyline descriptor rendered over Maribor streets in 2D and 3D modes.

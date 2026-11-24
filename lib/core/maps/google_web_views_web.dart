@@ -6,6 +6,7 @@ import 'dart:convert';
 import 'dart:js_interop';
 import 'dart:ui_web' as ui_web;
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:web/web.dart' as web;
@@ -90,11 +91,7 @@ class _GoogleMap3DPlatformViewState extends State<GoogleMap3DPlatformView> {
     super.initState();
     _viewType = 'marprom-gmap-vector-3d-${++_counter}';
     ui_web.platformViewRegistry.registerViewFactory(_viewType, (int viewId) {
-      final host = web.document.createElement('div') as web.HTMLDivElement;
-      host.style.width = '100%';
-      host.style.height = '100%';
-      host.style.position = 'relative';
-      host.style.backgroundColor = '#161315';
+      final host = _createIsolatedMapHost();
       _hostElement = host;
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) _sync();
@@ -129,7 +126,7 @@ class _GoogleMap3DPlatformViewState extends State<GoogleMap3DPlatformView> {
 
   @override
   Widget build(BuildContext context) {
-    return HtmlElementView(viewType: _viewType);
+    return MapGestureIsolator(child: HtmlElementView(viewType: _viewType));
   }
 }
 
@@ -183,11 +180,7 @@ class _GoogleRoadMapPlatformViewState extends State<GoogleRoadMapPlatformView> {
     super.initState();
     _viewType = 'marprom-google-roadmap-${++_counter}';
     ui_web.platformViewRegistry.registerViewFactory(_viewType, (int viewId) {
-      final host = web.document.createElement('div') as web.HTMLDivElement;
-      host.style.width = '100%';
-      host.style.height = '100%';
-      host.style.position = 'relative';
-      host.style.backgroundColor = '#161315';
+      final host = _createIsolatedMapHost();
       _hostElement = host;
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) _syncMap();
@@ -222,7 +215,93 @@ class _GoogleRoadMapPlatformViewState extends State<GoogleRoadMapPlatformView> {
 
   @override
   Widget build(BuildContext context) {
-    return HtmlElementView(viewType: _viewType);
+    return MapGestureIsolator(child: HtmlElementView(viewType: _viewType));
+  }
+}
+
+//**********************************************
+// Scroll / gesture isolation for map surfaces *
+//**********************************************
+
+/// Creates the DOM host for a Google Maps JS map and stops wheel events that
+/// Google Maps already handled from bubbling up to the Flutter view.
+///
+/// Flutter web listens for `wheel` on its root `<flutter-view>` element in the
+/// bubble phase. Platform views live inside that element, so without this the
+/// same wheel event zooms the map AND is converted into a Flutter
+/// `PointerScrollEvent` that scrolls the surrounding page `ListView`.
+/// Calling `preventDefault` (non-passive listener) also stops the browser
+/// from zooming the page on ctrl+wheel / trackpad pinch over the map.
+web.HTMLDivElement _createIsolatedMapHost() {
+  final host = web.document.createElement('div') as web.HTMLDivElement;
+  host.style.width = '100%';
+  host.style.height = '100%';
+  host.style.position = 'relative';
+  host.style.backgroundColor = '#161315';
+  host.style.setProperty('touch-action', 'none');
+  host.style.setProperty('overscroll-behavior', 'contain');
+  host.setAttribute('data-marprom-map', '1');
+  final stopWheel = ((web.Event event) {
+    event.stopPropagation();
+    if (event.cancelable) event.preventDefault();
+  }).toJS;
+  host.addEventListener(
+    'wheel',
+    stopWheel,
+    web.AddEventListenerOptions(passive: false),
+  );
+  // Older Safari pinch gestures.
+  host.addEventListener(
+    'gesturestart',
+    stopWheel,
+    web.AddEventListenerOptions(passive: false),
+  );
+  host.addEventListener(
+    'gesturechange',
+    stopWheel,
+    web.AddEventListenerOptions(passive: false),
+  );
+  return host;
+}
+
+/// Makes the Flutter side ignore scroll/zoom input aimed at an embedded map.
+///
+/// * Pointer signals (mouse wheel, ctrl+wheel/trackpad pinch scale) over the
+///   map are claimed first via [PointerSignalResolver], so an ancestor
+///   `Scrollable` never scrolls the page.
+/// * An [EagerGestureRecognizer] wins the gesture arena on pointer down, so a
+///   touch drag on the map pans the map instead of dragging the page.
+///
+/// Controls stacked above the map (siblings in a `Stack`) are hit-tested before
+/// the map and keep working normally.
+class MapGestureIsolator extends StatelessWidget {
+  /// Creates a [MapGestureIsolator].
+  const MapGestureIsolator({super.key, required this.child});
+
+  /// The map platform view.
+  final Widget child;
+
+  static void _absorbSignal(PointerSignalEvent event) {
+    GestureBinding.instance.pointerSignalResolver.register(event, (_) {});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Listener(
+      behavior: HitTestBehavior.opaque,
+      onPointerSignal: _absorbSignal,
+      child: RawGestureDetector(
+        behavior: HitTestBehavior.opaque,
+        gestures: <Type, GestureRecognizerFactory>{
+          EagerGestureRecognizer:
+              GestureRecognizerFactoryWithHandlers<EagerGestureRecognizer>(
+            EagerGestureRecognizer.new,
+            (_) {},
+          ),
+        },
+        child: child,
+      ),
+    );
   }
 }
 
@@ -292,6 +371,10 @@ void _syncHostWithGoogleJs({
           'isBus': mk.isBus,
           'isAccessible': mk.isWheelchairAccessible,
           'color': toHex(mk.color),
+          if (mk.occupancyPercent != null)
+            'occupancyPercent': mk.occupancyPercent!.clamp(0, 100),
+          if (mk.occupancyColor != null)
+            'occupancyColor': toHex(mk.occupancyColor!),
         },
     ],
   };

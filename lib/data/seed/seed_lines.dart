@@ -5,11 +5,14 @@
 import 'package:flutter/material.dart';
 import 'package:latlong2/latlong.dart';
 
+import '../../core/utils/polyline_codec.dart';
 import '../models/bus_line.dart';
+import 'seed_road_geometry.dart';
 import 'seed_stops.dart';
 
-/// Builds a two-direction [BusLine] storing only stop waypoints.
-/// Road-following street geometry is fetched dynamically via Google Routes API v2.
+/// Builds a two-direction [BusLine] with stop waypoints and bundled
+/// road-following geometry between consecutive stops
+/// (from [seedRoadSegmentsEncoded], straight fallback per missing pair).
 BusLine _buildLine({
   required String id,
   required String code,
@@ -27,6 +30,8 @@ BusLine _buildLine({
   bool isElectricDefault = false,
 }) {
   final inboundStopIds = outboundStopIds.reversed.toList(growable: false);
+  final outboundSegments = _roadSegmentsFromStops(outboundStopIds);
+  final inboundSegments = _roadSegmentsFromStops(inboundStopIds);
   return BusLine(
     id: id,
     code: code,
@@ -46,6 +51,8 @@ BusLine _buildLine({
         terminalStopId: outboundStopIds.last,
         stopIds: outboundStopIds,
         polyline: _polylineFromStops(outboundStopIds),
+        roadPolyline: LineDirection.joinSegments(outboundSegments),
+        roadSegments: outboundSegments,
       ),
       LineDirection(
         id: '${id}_in',
@@ -53,6 +60,8 @@ BusLine _buildLine({
         terminalStopId: inboundStopIds.last,
         stopIds: inboundStopIds,
         polyline: _polylineFromStops(inboundStopIds),
+        roadPolyline: LineDirection.joinSegments(inboundSegments),
+        roadSegments: inboundSegments,
       ),
     ],
   );
@@ -61,6 +70,37 @@ BusLine _buildLine({
 List<LatLng> _polylineFromStops(List<String> stopIds) {
   return [
     for (final stopId in stopIds) seedStopsById[stopId]!.position,
+  ];
+}
+
+/// Decoded road segments keyed like [seedRoadSegmentsEncoded], filled lazily
+/// so every stop pair is decoded at most once.
+final Map<String, List<LatLng>> _decodedSegmentCache = {};
+
+/// Returns the bundled road geometry from [fromId] to [toId], or the straight
+/// two-point segment between the stops when no geometry is bundled.
+///
+/// The decoded geometry is used as-is (pure road geometry): many stops sit
+/// off the carriageway, so the segment starts where the bus leaves stop
+/// [fromId] on the road and ends where it reaches stop [toId]. Pinning the
+/// ends to the stop coordinates would draw a road-stop-road spike.
+List<LatLng> _roadSegment(String fromId, String toId) {
+  final from = seedStopsById[fromId]!.position;
+  final to = seedStopsById[toId]!.position;
+  final key = '$fromId>$toId';
+  final encoded = seedRoadSegmentsEncoded[key];
+  if (encoded == null || encoded.isEmpty) return [from, to];
+  return _decodedSegmentCache[key] ??= () {
+    final decoded = decodePolyline(encoded);
+    if (decoded.length < 2) return [from, to];
+    return List<LatLng>.unmodifiable(decoded);
+  }();
+}
+
+List<List<LatLng>> _roadSegmentsFromStops(List<String> stopIds) {
+  return [
+    for (var i = 0; i < stopIds.length - 1; i++)
+      _roadSegment(stopIds[i], stopIds[i + 1]),
   ];
 }
 

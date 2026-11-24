@@ -224,30 +224,13 @@ class _RouteMapPreview extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final scheme = Theme.of(context).colorScheme;
-    final googleRoutesMap = ref.watch(googleLineRoutesProvider);
-
     final legPaths = <int, List<LatLng>>{};
     final allPoints = <LatLng>[];
     for (var i = 0; i < option.legs.length; i++) {
       final leg = option.legs[i];
       if (leg.polyline.isEmpty) continue;
-      List<LatLng> resolved = leg.polyline;
-      if (leg.type == TripLegType.bus &&
-          leg.lineId != null &&
-          leg.directionId != null &&
-          leg.polyline.length >= 2) {
-        final key = '${leg.lineId}|${leg.directionId}';
-        final asyncRoad = ref.watch(routeGeometryProvider(key));
-        final fullRoad =
-            googleRoutesMap[key]?.polylinePoints ?? asyncRoad.valueOrNull;
-        if (fullRoad != null && fullRoad.length >= 2) {
-          resolved = slicePolylineBetweenPoints(
-            fullRoad,
-            leg.polyline.first,
-            leg.polyline.last,
-          );
-        }
-      }
+      // Bus legs on a known line follow the bundled bus road geometry.
+      final resolved = roadPathForBusLeg(leg, linesById: linesById);
       legPaths[i] = resolved;
       allPoints.addAll(resolved);
     }

@@ -49,7 +49,11 @@ class BusSimulator {
   Timer? _timer;
   bool _disposed = false;
 
-  /// Updates simulated routes with real street polylines returned by Google Routes API v2.
+  /// Stores externally resolved street polylines per `'lineId|directionId'`.
+  ///
+  /// Kept for API compatibility: buses are positioned along the bundled
+  /// stop-to-stop road geometry ([LineDirection.segment]), so these
+  /// geometries no longer change vehicle positions.
   void setGoogleRouteGeometries(Map<String, List<LatLng>> geometries) {
     if (_disposed || geometries.isEmpty) return;
     var changed = false;
@@ -117,12 +121,18 @@ class BusSimulator {
           direction: direction,
           date: now,
         );
-        final simulationPolyline =
-            _googleRouteGeometries['${line.id}|${direction.id}'] ??
-                direction.roadPolyline ??
-                direction.polyline;
-        final polylineMeters =
-            GeoUtils.polylineLengthMeters(simulationPolyline);
+        // Road length of every stop-to-stop segment, plus the distance from
+        // the first stop to the start of each segment (for [progress]).
+        final segmentMeters = [
+          for (var i = 0; i < direction.segmentCount; i++)
+            GeoUtils.polylineLengthMeters(direction.segment(i)),
+        ];
+        final segmentStartMeters = <double>[];
+        var polylineMeters = 0.0;
+        for (final meters in segmentMeters) {
+          segmentStartMeters.add(polylineMeters);
+          polylineMeters += meters;
+        }
 
         for (final trip in trips) {
           final delaySeconds = _delayModel.delaySecondsForTrip(
@@ -151,19 +161,13 @@ class BusSimulator {
               effectiveEnd.difference(effectiveStart).inSeconds;
           if (totalDurationSec <= 0) continue;
 
-          final elapsedSec = now.difference(effectiveStart).inSeconds;
-          final progress = (elapsedSec / totalDurationSec).clamp(0.0, 1.0);
-          final pos =
-              GeoUtils.interpolatePolyline(simulationPolyline, progress);
-          final aheadPos = GeoUtils.interpolatePolyline(
-            simulationPolyline,
-            (progress + 0.015).clamp(0.0, 1.0),
-          );
-          final headingDegrees = GeoUtils.bearingDegrees(pos, aheadPos);
-
-          // Identify the next stop ahead of the vehicle based on adjusted stop times.
-          var nextIdx = direction.stopIds.length - 1;
-          for (var i = 0; i < trip.stopTimes.length; i++) {
+          // Identify the next stop ahead of the vehicle based on adjusted
+          // stop times; the vehicle is on the road segment prevIdx -> nextIdx.
+          final stopCount =
+              math.min(trip.stopTimes.length, direction.stopIds.length);
+          if (stopCount == 0) continue;
+          var nextIdx = stopCount - 1;
+          for (var i = 0; i < stopCount; i++) {
             final stopEta =
                 trip.stopTimes[i].add(Duration(seconds: delaySeconds));
             if (!stopEta.isBefore(now)) {
@@ -173,6 +177,62 @@ class BusSimulator {
           }
 
           final prevIdx = nextIdx > 0 ? nextIdx - 1 : 0;
+
+          // Fraction of the scheduled time between the two stops that has
+          // elapsed, mapped onto the road geometry of that segment.
+          final prevEta =
+              trip.stopTimes[prevIdx].add(Duration(seconds: delaySeconds));
+          final segmentEta =
+              trip.stopTimes[nextIdx].add(Duration(seconds: delaySeconds));
+          final spanMs = segmentEta.difference(prevEta).inMilliseconds;
+          final segmentFraction = nextIdx == prevIdx
+              ? 0.0
+              : spanMs <= 0
+                  ? 1.0
+                  : (now.difference(prevEta).inMilliseconds / spanMs)
+                      .clamp(0.0, 1.0);
+
+          final LatLng pos;
+          final LatLng aheadPos;
+          final double progress;
+          if (nextIdx == prevIdx || prevIdx >= segmentMeters.length) {
+            // At the first stop (or a degenerate direction): face the road.
+            final firstSegment = direction.segment(0);
+            pos = firstSegment.isNotEmpty
+                ? firstSegment.first
+                : (direction.polyline.isEmpty
+                    ? GeoUtils.mariborCenter
+                    : direction.polyline[
+                        math.min(nextIdx, direction.polyline.length - 1)]);
+            aheadPos = firstSegment.length >= 2
+                ? GeoUtils.interpolatePolyline(firstSegment, 0.1)
+                : pos;
+            progress = 0.0;
+          } else {
+            final segment = direction.segment(prevIdx);
+            pos = GeoUtils.interpolatePolyline(segment, segmentFraction);
+            aheadPos = segmentFraction < 0.95
+                ? GeoUtils.interpolatePolyline(
+                    segment,
+                    math.min(1.0, segmentFraction + 0.05),
+                  )
+                : (prevIdx + 1 < segmentMeters.length
+                    ? GeoUtils.interpolatePolyline(
+                        direction.segment(prevIdx + 1),
+                        0.05,
+                      )
+                    : segment.last);
+            progress = polylineMeters > 0
+                ? ((segmentStartMeters[prevIdx] +
+                            segmentMeters[prevIdx] * segmentFraction) /
+                        polylineMeters)
+                    .clamp(0.0, 1.0)
+                : (segmentFraction + prevIdx) /
+                    math.max(1, segmentMeters.length);
+          }
+          final headingDegrees = pos == aheadPos
+              ? 0.0
+              : GeoUtils.bearingDegrees(pos, aheadPos);
           final fromStopId = direction.stopIds[prevIdx];
           final nextStopId = direction.stopIds[nextIdx];
           final nextStopName = seedStopsById[nextStopId]?.name ?? nextStopId;

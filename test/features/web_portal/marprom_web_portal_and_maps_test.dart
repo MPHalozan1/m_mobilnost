@@ -13,6 +13,8 @@ import 'package:m_mobilnost/core/maps/google_maps_config.dart';
 import 'package:m_mobilnost/core/network/connectivity_provider.dart';
 import 'package:m_mobilnost/core/network/google_routes_service.dart';
 import 'package:m_mobilnost/core/network/route_geometry_service.dart';
+import 'package:m_mobilnost/core/widgets/bus_occupancy_cutaway.dart';
+import 'package:m_mobilnost/core/widgets/occupancy_strip.dart';
 import 'package:m_mobilnost/data/repositories/repository_providers.dart';
 import 'package:m_mobilnost/data/seed/seed_lines.dart';
 import 'package:m_mobilnost/data/seed/seed_timetables.dart';
@@ -24,6 +26,7 @@ import 'package:m_mobilnost/features/web_portal/presentation/marprom_web_scaffol
 import 'package:m_mobilnost/features/web_portal/presentation/pages/web_download_page.dart';
 import 'package:m_mobilnost/features/web_portal/presentation/pages/web_home_page.dart';
 import 'package:m_mobilnost/features/web_portal/presentation/pages/web_live_stats_page.dart';
+import 'package:m_mobilnost/features/web_portal/presentation/widgets/live_bus_occupancy_card.dart';
 import 'package:m_mobilnost/features/web_portal/presentation/pages/web_route_planner_page.dart';
 import 'package:m_mobilnost/features/web_portal/presentation/pages/web_schedules_page.dart';
 import 'package:m_mobilnost/features/web_portal/presentation/pages/web_tickets_page.dart';
@@ -207,20 +210,16 @@ void main() {
       expect(fallback.durationSeconds, greaterThan(300));
     });
 
-    test('GoogleLineRoutesNotifier deduplicates concurrent route loads and slices segments cleanly', () async {
-      SharedPreferences.setMockInitialValues({});
-      final prefs = await SharedPreferences.getInstance();
+    test('GoogleLineRoutesNotifier serves bundled road geometry without network and slices segments cleanly', () async {
+      // Adapted: line shapes now come from the bundled stop-to-stop road
+      // geometry instead of a Google Routes request with all stops as
+      // waypoints, so no routes call may happen.
       final fakeService = _CountingFakeGoogleRoutesService();
-      final sim = BusSimulator(seed: 42, useSimulatedLive: true);
-      final notifier = GoogleLineRoutesNotifier(
-        routesService: fakeService,
-        simulator: sim,
-        prefs: prefs,
+      final container = ProviderContainer(
+        overrides: [googleRoutesServiceProvider.overrideWithValue(fakeService)],
       );
-      addTearDown(() {
-        notifier.dispose();
-        sim.dispose();
-      });
+      addTearDown(container.dispose);
+      final notifier = container.read(googleLineRoutesProvider.notifier);
 
       final line = seedLines.first;
       final dir = line.directions.first;
@@ -229,10 +228,13 @@ void main() {
         notifier.ensureLineDirectionLoaded(line, dir, forceInTests: true),
       ]);
 
-      expect(fakeService.callCount, 1);
+      expect(fakeService.callCount, 0);
       expect(results[0], isNotNull);
       expect(results[1], isNotNull);
-      expect(results[0]!.isLiveApi, isTrue);
+      expect(results[0]!.isLiveApi, isFalse);
+      expect(results[0]!.polylinePoints, dir.routePolyline);
+      expect(results[0]!.distanceMeters, greaterThan(0));
+      expect(results[0]!.durationSeconds, greaterThan(0));
       expect(results[0]!.polylinePoints.length, results[1]!.polylinePoints.length);
 
       const fullRoad = [
@@ -377,6 +379,55 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('Prenesi m-mobilnost.apk'), findsNothing);
     });
+
+    for (final width in [1280.0, 400.0]) {
+      testWidgets('WebLiveStatsPage shows per-bus occupancy cards and seat detail on select (${width.toInt()} px)', (tester) async {
+        tester.view.physicalSize = Size(width, 900);
+        tester.view.devicePixelRatio = 1.0;
+        addTearDown(() {
+          tester.view.resetPhysicalSize();
+          tester.view.resetDevicePixelRatio();
+        });
+
+        final container = await _createWebTestContainer();
+        addTearDown(container.dispose);
+
+        await tester.pumpWidget(
+          _wrapWebPage(
+            container,
+            const Scaffold(body: SingleChildScrollView(child: WebLiveStatsPage())),
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull);
+
+        // Truthful road-geometry source line instead of "Google Routes API v2".
+        expect(find.textContaining('OpenStreetMap, avtobusno usmerjanje'), findsOneWidget);
+        expect(find.textContaining('živih cestnih tras'), findsNothing);
+
+        final panel = find.byKey(const Key('live_occupancy_panel'));
+        expect(panel, findsOneWidget);
+        final cards = find.descendant(of: panel, matching: find.byType(LiveBusOccupancyCard));
+        expect(cards, findsWidgets);
+        expect(find.descendant(of: panel, matching: find.byType(OccupancyStrip)), findsWidgets);
+        expect(find.descendant(of: panel, matching: find.text('simulirano')), findsWidgets);
+
+        // Fullest bus first; its card carries passengers / capacity (xx %).
+        final first = tester.widget<LiveBusOccupancyCard>(cards.first);
+        expect(
+          find.descendant(of: panel, matching: find.textContaining('${first.bus.passengerCount} / ${first.bus.vehicleCapacity} potnikov (${first.bus.loadPercent} %)')),
+          findsWidgets,
+        );
+        expect(find.byType(BusOccupancyCutaway), findsNothing);
+
+        await tester.ensureVisible(cards.first);
+        await tester.tap(cards.first);
+        await tester.pumpAndSettle();
+        expect(find.byType(BusOccupancyCutaway), findsOneWidget);
+        expect(tester.widget<LiveBusOccupancyCard>(cards.first).selected, isTrue);
+        expect(tester.takeException(), isNull);
+      });
+    }
 
     testWidgets('Mobile MapScreen expands into FullScreenTransitMapPage and closes cleanly', (tester) async {
       tester.view.physicalSize = const Size(390, 844);

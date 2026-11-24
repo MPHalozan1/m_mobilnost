@@ -24,20 +24,12 @@ import 'route_planner_models.dart';
 export 'route_planner_models.dart';
 
 /// Provides the [RoutePlanner] wired to [LineRepository], [TimetableRepository],
-/// and Google Routes API v2 (`TRANSIT` + cached road polylines).
+/// and Google Routes API v2 (`TRANSIT`); bus legs follow bundled road geometry.
 final routePlannerProvider = Provider<RoutePlanner>((ref) {
   return RoutePlanner(
     lineRepository: ref.watch(lineRepositoryProvider),
     timetableRepository: ref.watch(timetableRepositoryProvider),
     googleRoutesService: ref.watch(googleRoutesServiceProvider),
-    routeGeometryLookup: () {
-      final routes = ref.read(googleLineRoutesProvider);
-      return {
-        for (final entry in routes.entries)
-          if (entry.value.polylinePoints.length >= 2)
-            entry.key: entry.value.polylinePoints,
-      };
-    },
     isSimulatedLiveEnabled: () => ref.read(a11ySettingsProvider).useSimulatedLive,
     isOfflineCheck: () => ref.read(isOfflineProvider),
   );
@@ -51,14 +43,12 @@ class RoutePlanner {
     required LineRepository lineRepository,
     required TimetableRepository timetableRepository,
     GoogleRoutesService? googleRoutesService,
-    Map<String, List<LatLng>> Function()? routeGeometryLookup,
     bool Function()? isSimulatedLiveEnabled,
     bool Function()? isOfflineCheck,
     DateTime Function()? clock,
   })  : _lines = lineRepository,
         _timetables = timetableRepository,
         _googleRoutesService = googleRoutesService,
-        _routeGeometryLookup = routeGeometryLookup,
         _isSimulatedLiveEnabled = isSimulatedLiveEnabled ?? (() => true),
         _isOfflineCheck = isOfflineCheck ?? (() => false),
         _clock = clock ?? DateTime.now;
@@ -75,7 +65,6 @@ class RoutePlanner {
   final LineRepository _lines;
   final TimetableRepository _timetables;
   final GoogleRoutesService? _googleRoutesService;
-  final Map<String, List<LatLng>> Function()? _routeGeometryLookup;
   final bool Function() _isSimulatedLiveEnabled;
   final bool Function() _isOfflineCheck;
   final DateTime Function() _clock;
@@ -179,9 +168,10 @@ class RoutePlanner {
         originLabel: originLabel,
         destinationLabel: destinationLabel,
       );
+      final linesById = {for (final line in allLines) line.id: line};
       for (final gOpt in googleTransit) {
         if (accessibleOnly && !gOpt.isAccessible) continue;
-        combinedOptions.add(gOpt);
+        combinedOptions.add(_withBusRoadGeometry(gOpt, linesById));
       }
     }
 
@@ -201,6 +191,61 @@ class RoutePlanner {
     }
 
     return _enrichSelectedWalkPolylines(selected, routesService);
+  }
+
+  /// Redraws every bus leg of [opt] that rides a known Marprom line between
+  /// known stops along the bundled bus road geometry; other legs are kept.
+  TripOption _withBusRoadGeometry(
+    TripOption opt,
+    Map<String, BusLine> linesById,
+  ) {
+    var changed = false;
+    final newLegs = <TripLeg>[];
+    for (final leg in opt.legs) {
+      final path = roadPathForBusLeg(leg, linesById: linesById);
+      if (identical(path, leg.polyline)) {
+        newLegs.add(leg);
+        continue;
+      }
+      changed = true;
+      newLegs.add(
+        TripLeg(
+          type: leg.type,
+          fromName: leg.fromName,
+          toName: leg.toName,
+          fromStopId: leg.fromStopId,
+          toStopId: leg.toStopId,
+          startTime: leg.startTime,
+          endTime: leg.endTime,
+          durationMinutes: leg.durationMinutes,
+          distanceMeters: leg.distanceMeters,
+          lineId: leg.lineId,
+          lineCode: leg.lineCode,
+          directionId: leg.directionId,
+          directionName: leg.directionName,
+          stopCount: leg.stopCount,
+          intermediateStopIds: leg.intermediateStopIds,
+          polyline: path,
+          occupancy: leg.occupancy,
+          delaySeconds: leg.delaySeconds,
+          isAccessible: leg.isAccessible,
+        ),
+      );
+    }
+    if (!changed) return opt;
+    return TripOption(
+      id: opt.id,
+      totalMinutes: opt.totalMinutes,
+      walkMeters: opt.walkMeters,
+      walkMinutes: opt.walkMinutes,
+      transferCount: opt.transferCount,
+      hasTightTransfer: opt.hasTightTransfer,
+      tightTransferMinutes: opt.tightTransferMinutes,
+      legs: newLegs,
+      freshness: opt.freshness,
+      reliabilityNote: opt.reliabilityNote,
+      isGoogleTransit: opt.isGoogleTransit,
+    );
   }
 
   Future<List<TripOption>> _enrichSelectedWalkPolylines(
@@ -1745,16 +1790,10 @@ class RoutePlanner {
     required int toIdx,
     required _RideSegment ride,
   }) {
-    final liveRoad = _routeGeometryLookup?.call()['${line.id}|${dir.id}'];
     final List<LatLng> poly;
-    if (liveRoad != null && liveRoad.length >= 2) {
-      poly = slicePolylineBetweenPoints(
-        liveRoad,
-        fromStop.position,
-        toStop.position,
-      );
-    } else if (dir.polyline.length > toIdx) {
-      poly = dir.polyline.sublist(fromIdx, toIdx + 1);
+    if (dir.polyline.length > toIdx && fromIdx < toIdx) {
+      // Follow the bundled road geometry of this line between the two stops.
+      poly = dir.roadPathBetween(fromIdx, toIdx);
     } else {
       poly = <LatLng>[fromStop.position, toStop.position];
     }

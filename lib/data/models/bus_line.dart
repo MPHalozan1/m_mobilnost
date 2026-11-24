@@ -71,6 +71,7 @@ class LineDirection {
     required this.stopIds,
     required this.polyline,
     this.roadPolyline,
+    this.roadSegments = const [],
   });
 
   /// Unique direction ID (for example `G6_out` or `G6_in`).
@@ -88,9 +89,74 @@ class LineDirection {
   /// Stop waypoint coordinates used as input to Google Routes API v2.
   final List<LatLng> polyline;
 
-  /// Live road-following geometry returned by Google Routes API v2 (`computeRoutes`).
+  /// Full road-following route geometry for this direction.
+  ///
+  /// Seeded directions fill this with the bundled [roadSegments] joined
+  /// together (see [routePolyline]); it is null only for directions built
+  /// without road geometry.
   final List<LatLng>? roadPolyline;
+
+  /// Road-following geometry between consecutive stops.
+  ///
+  /// Segment `i` runs along the road from stop `i` to stop `i + 1`, so a
+  /// complete list has `stopIds.length - 1` entries. Missing or degenerate
+  /// (fewer than two points) entries fall back to the straight line between
+  /// the two stops; see [segment].
+  final List<List<LatLng>> roadSegments;
+
+  /// Number of stop-to-stop segments in this direction.
+  int get segmentCount => polyline.length < 2 ? 0 : polyline.length - 1;
+
+  /// Road geometry from stop [index] to stop `index + 1`.
+  ///
+  /// Returns the bundled road segment when present, otherwise the straight
+  /// two-point segment between the stops. Returns an empty list when [index]
+  /// is out of range.
+  List<LatLng> segment(int index) {
+    if (index < 0 || index >= segmentCount) return const [];
+    if (index < roadSegments.length && roadSegments[index].length >= 2) {
+      return roadSegments[index];
+    }
+    return [polyline[index], polyline[index + 1]];
+  }
+
+  /// Full route geometry to draw on maps: [roadPolyline] when set, otherwise
+  /// all [segment]s concatenated without duplicated joint points (cached).
+  List<LatLng> get routePolyline =>
+      roadPolyline ??
+      (_routePolylineCache[this] ??= List<LatLng>.unmodifiable(
+        roadPathBetween(0, polyline.length - 1),
+      ));
+
+  /// Road-following path from stop [fromIdx] to stop [toIdx] (inclusive).
+  ///
+  /// Indices are clamped to the valid stop range. When `fromIdx >= toIdx`
+  /// the result is the single stop point at [fromIdx].
+  List<LatLng> roadPathBetween(int fromIdx, int toIdx) {
+    if (polyline.isEmpty) return const [];
+    final last = polyline.length - 1;
+    final from = fromIdx.clamp(0, last);
+    final to = toIdx.clamp(0, last);
+    if (from >= to) return [polyline[from]];
+
+    return joinSegments([for (var i = from; i < to; i++) segment(i)]);
+  }
+
+  /// Joins [segments] into one path without duplicated joint points.
+  static List<LatLng> joinSegments(List<List<LatLng>> segments) {
+    final path = <LatLng>[];
+    for (final points in segments) {
+      for (var p = 0; p < points.length; p++) {
+        if (p == 0 && path.isNotEmpty && path.last == points.first) continue;
+        path.add(points[p]);
+      }
+    }
+    return path;
+  }
 }
+
+final Expando<List<LatLng>> _routePolylineCache =
+    Expando<List<LatLng>>('routePolyline');
 
 /// Represents a Marprom city bus line with brand color, fleet class, and accessibility metadata.
 @immutable

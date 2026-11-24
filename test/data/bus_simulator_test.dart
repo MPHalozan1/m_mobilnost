@@ -184,11 +184,15 @@ void main() {
       expect(snap2, isNotEmpty);
 
       // Find the same vehicle across t1 and t2 and verify polyline progress moved forward.
-      final byId1 = {for (final b in snap1) b.vehicleId: b};
+      // vehicleId alone is not unique (inbound and outbound trips can share
+      // the same suffix), so match on vehicle + direction.
+      final byId1 = {
+        for (final b in snap1) '${b.vehicleId}|${b.directionId}': b,
+      };
       BusPosition? movedBefore;
       BusPosition? movedAfter;
       for (final b2 in snap2) {
-        final b1 = byId1[b2.vehicleId];
+        final b1 = byId1['${b2.vehicleId}|${b2.directionId}'];
         if (b1 != null && b2.progress < 0.99) {
           movedBefore = b1;
           movedAfter = b2;
