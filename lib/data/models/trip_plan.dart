@@ -1,4 +1,6 @@
-// Defines trip planning request modes, route legs, and ranked trip options.
+//**********************************************
+// Trip planning models, sorting & transfers   *
+//**********************************************
 
 import 'package:flutter/foundation.dart';
 import 'package:latlong2/latlong.dart';
@@ -18,6 +20,15 @@ enum TripTimeMode {
   arriveBy,
 }
 
+/// Sorting strategy for multi-bus trip results.
+enum TripSortMode {
+  /// Rank by shortest total duration / earliest arrival.
+  fastest,
+
+  /// Rank by fewest bus transfers first, then shortest duration.
+  fewestTransfers,
+}
+
 /// Identifies the travel mode of a single [TripLeg].
 enum TripLegType {
   /// Pedestrian walking segment.
@@ -25,6 +36,54 @@ enum TripLegType {
 
   /// Marprom city bus ride segment.
   bus,
+}
+
+/// Detailed transfer breakdown between two consecutive bus legs.
+@immutable
+class TransferSummary {
+  /// Creates a [TransferSummary].
+  const TransferSummary({
+    required this.alightingStopName,
+    required this.boardingStopName,
+    required this.fromLineCode,
+    required this.toLineCode,
+    required this.walkMeters,
+    required this.walkMinutes,
+    required this.waitMinutes,
+    required this.arrivalAtTransfer,
+    required this.departureFromTransfer,
+    this.isTight = false,
+  });
+
+  /// Station where the rider exits the previous bus.
+  final String alightingStopName;
+
+  /// Station where the rider boards the connecting bus.
+  final String boardingStopName;
+
+  /// Line code of the arriving bus.
+  final String fromLineCode;
+
+  /// Line code of the connecting bus.
+  final String toLineCode;
+
+  /// Walking distance between transfer stops in meters (0 if same stop).
+  final double walkMeters;
+
+  /// Walking duration between transfer stops in minutes.
+  final int walkMinutes;
+
+  /// Waiting time at the transfer stop in minutes.
+  final int waitMinutes;
+
+  /// Arrival timestamp of the first bus at the transfer station.
+  final DateTime arrivalAtTransfer;
+
+  /// Departure timestamp of the connecting bus from the transfer station.
+  final DateTime departureFromTransfer;
+
+  /// True when transfer wait buffer is tight (<= 4 min).
+  final bool isTight;
 }
 
 /// Represents one contiguous walking or bus leg within a [TripOption].
@@ -98,7 +157,7 @@ class TripLeg {
   /// Ordered stop IDs traversed on a bus leg.
   final List<String> intermediateStopIds;
 
-  /// Geographic polyline coordinates for map preview.
+  /// Geographic road/walk polyline coordinates for map preview.
   final List<LatLng> polyline;
 
   /// Expected occupancy for bus legs.
@@ -107,7 +166,7 @@ class TripLeg {
   /// Delay in seconds applied to bus legs.
   final int delaySeconds;
 
-  /// Whether this leg meets step-free accessibility criteria.
+  /// Whether this leg meets wheelchair accessibility criteria (low-floor + ramp + step-free stops).
   final bool isAccessible;
 }
 
@@ -126,6 +185,7 @@ class TripOption {
     required this.legs,
     required this.freshness,
     this.reliabilityNote,
+    this.isGoogleTransit = false,
   });
 
   /// Stable option identifier for selection and keys.
@@ -158,6 +218,9 @@ class TripOption {
   /// Optional note explaining tight connections or simulated delay risks.
   final String? reliabilityNote;
 
+  /// True when computed live from Google Routes API v2 `TRANSIT`.
+  final bool isGoogleTransit;
+
   /// Start time of the first leg, or `DateTime.now()` if empty.
   DateTime get departureTime =>
       legs.isEmpty ? DateTime.now() : legs.first.startTime;
@@ -166,6 +229,51 @@ class TripOption {
   DateTime get arrivalTime =>
       legs.isEmpty ? DateTime.now() : legs.last.endTime;
 
-  /// True when every leg in the itinerary is step-free accessible.
+  /// True when every leg in the itinerary is wheelchair-accessible.
   bool get isAccessible => legs.every((leg) => leg.isAccessible);
+
+  /// Extracts structured [TransferSummary] entries between consecutive bus legs.
+  List<TransferSummary> get transfers {
+    final result = <TransferSummary>[];
+    for (var i = 0; i < legs.length; i++) {
+      final curr = legs[i];
+      if (curr.type != TripLegType.bus) continue;
+
+      int prevBusIdx = -1;
+      for (var j = i - 1; j >= 0; j--) {
+        if (legs[j].type == TripLegType.bus) {
+          prevBusIdx = j;
+          break;
+        }
+      }
+      if (prevBusIdx == -1) continue;
+
+      final prevBus = legs[prevBusIdx];
+      var walkMeters = 0.0;
+      var walkMin = 0;
+      for (var k = prevBusIdx + 1; k < i; k++) {
+        if (legs[k].type == TripLegType.walk) {
+          walkMeters += legs[k].distanceMeters;
+          walkMin += legs[k].durationMinutes;
+        }
+      }
+      final arriveAtXfer = prevBus.endTime.add(Duration(minutes: walkMin));
+      final waitMin = curr.startTime.difference(arriveAtXfer).inMinutes.clamp(0, 120);
+      result.add(
+        TransferSummary(
+          alightingStopName: prevBus.toName,
+          boardingStopName: curr.fromName,
+          fromLineCode: prevBus.lineCode ?? prevBus.lineId ?? '',
+          toLineCode: curr.lineCode ?? curr.lineId ?? '',
+          walkMeters: walkMeters,
+          walkMinutes: walkMin,
+          waitMinutes: waitMin,
+          arrivalAtTransfer: prevBus.endTime,
+          departureFromTransfer: curr.startTime,
+          isTight: waitMin <= 4,
+        ),
+      );
+    }
+    return result;
+  }
 }

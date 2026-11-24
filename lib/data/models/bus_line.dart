@@ -1,7 +1,64 @@
-// Defines BusLine and LineDirection models for Maribor bus routes and polylines.
+//**********************************************
+// BusLine, LineDirection & Vehicle Classes    *
+//**********************************************
 
 import 'package:flutter/material.dart';
 import 'package:latlong2/latlong.dart';
+
+//**********************************************
+// Marprom vehicle class capacities (<= 120)   *
+//**********************************************
+
+/// Official Marprom Maribor bus chassis classes with realistic passenger limits.
+/// No vehicle in the Marprom fleet exceeds 120 total passengers.
+enum MarpromVehicleClass {
+  /// 9.5m electric/city midibus (e.g. IVECO E-WAY 9.5m on P7, P17, P19).
+  midibus9m(
+    label: 'Midibus 9.5m',
+    defaultMaxCapacity: 64,
+    defaultSeatedCapacity: 18,
+    defaultStandingCapacity: 46,
+  ),
+
+  /// 12m standard solo city bus (e.g. IVECO E-WAY 12m, MAN Lion's City 12).
+  solo12m(
+    label: 'Mestni solo 12m',
+    defaultMaxCapacity: 90,
+    defaultSeatedCapacity: 30,
+    defaultStandingCapacity: 60,
+  ),
+
+  /// 18m articulated ("zgibni") city bus on high-demand trunk routes (hard cap 120).
+  articulated18m(
+    label: 'Zgibni mestni 18m',
+    defaultMaxCapacity: 120,
+    defaultSeatedCapacity: 44,
+    defaultStandingCapacity: 76,
+  );
+
+  const MarpromVehicleClass({
+    required this.label,
+    required this.defaultMaxCapacity,
+    required this.defaultSeatedCapacity,
+    required this.defaultStandingCapacity,
+  });
+
+  /// Slovenian vehicle class name shown in fleet details.
+  final String label;
+
+  /// Realistic maximum passenger capacity (seated + standing).
+  final int defaultMaxCapacity;
+
+  /// Standard seated passenger count.
+  final int defaultSeatedCapacity;
+
+  /// Standard standing passenger count.
+  final int defaultStandingCapacity;
+}
+
+//**********************************************
+// LineDirection & BusLine domain models       *
+//**********************************************
 
 /// One travel direction of a [BusLine] with ordered stops and route polyline.
 @immutable
@@ -16,7 +73,7 @@ class LineDirection {
     this.roadPolyline,
   });
 
-  /// Unique direction ID (for example `6_out` or `6_in`).
+  /// Unique direction ID (for example `G6_out` or `G6_in`).
   final String id;
 
   /// Display direction label (typically `Origin - Terminus`).
@@ -28,31 +85,50 @@ class LineDirection {
   /// Ordered sequence of stop IDs visited from origin to terminus.
   final List<String> stopIds;
 
-  /// Geographic polyline coordinates used for map rendering and simulation.
+  /// Stop waypoint coordinates used as input to Google Routes API v2.
   final List<LatLng> polyline;
 
-  /// Detailed road-following geometry. When available, this is used by the
-  /// map and vehicle simulator instead of the station-only [polyline].
+  /// Live road-following geometry returned by Google Routes API v2 (`computeRoutes`).
   final List<LatLng>? roadPolyline;
 }
 
-/// Represents a Marprom city bus line with brand color and bidirectional routes.
+/// Represents a Marprom city bus line with brand color, fleet class, and accessibility metadata.
 @immutable
 class BusLine {
-  /// Creates a [BusLine] with two-way [directions] and accessibility metadata.
+  /// Creates a [BusLine] with two-way [directions] and realistic accessibility metadata.
   const BusLine({
     required this.id,
     required this.code,
     required this.name,
     required this.color,
     required this.directions,
-    this.isLowFloorDefault = true,
-  });
+    this.defaultVehicleClass = MarpromVehicleClass.solo12m,
+    int? maxCapacity,
+    bool isLowFloor = true,
+    this.hasWheelchairRamp = true,
+    this.hasWheelchairSpace = true,
+    this.hasAudioAnnouncements = true,
+    this.isElectricDefault = false,
+  })  : maxCapacity = (maxCapacity ??
+                (defaultVehicleClass == MarpromVehicleClass.midibus9m
+                    ? 64
+                    : defaultVehicleClass == MarpromVehicleClass.articulated18m
+                        ? 120
+                        : 90)) >
+            120
+            ? 120
+            : (maxCapacity ??
+                (defaultVehicleClass == MarpromVehicleClass.midibus9m
+                    ? 64
+                    : defaultVehicleClass == MarpromVehicleClass.articulated18m
+                        ? 120
+                        : 90)),
+        isLowFloor = isLowFloor;
 
   /// Stable line identifier.
   final String id;
 
-  /// Short public line code displayed on badges (for example `6` or `12`).
+  /// Short public line code displayed on badges (for example `G1` or `P12`).
   final String code;
 
   /// Descriptive route name covering key terminals.
@@ -64,8 +140,33 @@ class BusLine {
   /// Available travel directions (typically outbound and inbound).
   final List<LineDirection> directions;
 
-  /// Whether vehicles assigned to this line are normally low-floor accessible.
-  final bool isLowFloorDefault;
+  /// Default Marprom chassis class assigned to this line.
+  final MarpromVehicleClass defaultVehicleClass;
+
+  /// Maximum realistic passenger capacity for this line's vehicles (capped <= 120).
+  final int maxCapacity;
+
+  /// Whether buses assigned to this line are low-floor (*nizkopodni avtobus*).
+  final bool isLowFloor;
+
+  /// Backwards-compatible alias for [isLowFloor].
+  bool get isLowFloorDefault => isLowFloor;
+
+  /// Whether buses on this line carry a deployable wheelchair ramp (*izvlečna klančina*).
+  final bool hasWheelchairRamp;
+
+  /// Whether buses on this line have a dedicated wheelchair bay opposite middle doors.
+  final bool hasWheelchairSpace;
+
+  /// Whether buses announce stops via audio (*zvočne najave postajališč*).
+  final bool hasAudioAnnouncements;
+
+  /// Whether this line primarily operates battery-electric vehicles.
+  final bool isElectricDefault;
+
+  /// True only when the bus is low-floor AND equipped with both a ramp and wheelchair bay.
+  bool get isWheelchairAccessible =>
+      isLowFloor && hasWheelchairRamp && hasWheelchairSpace;
 
   /// Whether this is a high-frequency main Marprom trunk line (`G1`–`G6`).
   bool get isMainTrunk => code.startsWith('G');
@@ -76,5 +177,63 @@ class BusLine {
       if (direction.id == directionId) return direction;
     }
     return null;
+  }
+
+  /// Serializes this [BusLine] metadata for Cloud Firestore `bus_lines` collection
+  /// matching the strict field allowlist in `firestore.rules`.
+  Map<String, dynamic> toFirestore({Map<String, String>? encodedPolylines}) => {
+        'id': id,
+        'code': code,
+        'name': name,
+        'colorHex':
+            '#${(color.toARGB32() & 0x00FFFFFF).toRadixString(16).padLeft(6, '0')}',
+        'maxCapacity': maxCapacity.clamp(1, 120),
+        'isLowFloor': isLowFloor,
+        'isLowFloorDefault': isLowFloor,
+        'hasWheelchairRamp': hasWheelchairRamp,
+        'hasWheelchairSpace': hasWheelchairSpace,
+        'hasAudioAnnouncements': hasAudioAnnouncements,
+        'isMainTrunk': isMainTrunk,
+        'directions': [
+          for (final dir in directions)
+            {
+              'id': dir.id,
+              'name': dir.name,
+              'terminalStopId': dir.terminalStopId,
+              'stopIds': dir.stopIds,
+              if (encodedPolylines != null &&
+                  encodedPolylines['${id}|${dir.id}'] != null)
+                'encodedPolyline': encodedPolylines['${id}|${dir.id}'],
+            },
+        ],
+        'updatedAt': DateTime.now().toUtc().toIso8601String(),
+      };
+
+  /// Restores accessibility and capacity metadata overlaid from Firestore.
+  static BusLine mergeFromFirestore(BusLine base, Map<String, dynamic> data) {
+    final className = data['vehicleClass'] as String?;
+    final vehicleClass = MarpromVehicleClass.values.firstWhere(
+      (v) => v.name == className,
+      orElse: () => base.defaultVehicleClass,
+    );
+    final rawCap = (data['maxCapacity'] as num?)?.round() ?? base.maxCapacity;
+    return BusLine(
+      id: base.id,
+      code: data['code'] as String? ?? base.code,
+      name: data['name'] as String? ?? base.name,
+      color: base.color,
+      directions: base.directions,
+      defaultVehicleClass: vehicleClass,
+      maxCapacity: rawCap.clamp(1, 120),
+      isLowFloor: data['isLowFloor'] as bool? ?? base.isLowFloor,
+      hasWheelchairRamp:
+          data['hasWheelchairRamp'] as bool? ?? base.hasWheelchairRamp,
+      hasWheelchairSpace:
+          data['hasWheelchairSpace'] as bool? ?? base.hasWheelchairSpace,
+      hasAudioAnnouncements:
+          data['hasAudioAnnouncements'] as bool? ?? base.hasAudioAnnouncements,
+      isElectricDefault:
+          data['isElectricDefault'] as bool? ?? base.isElectricDefault,
+    );
   }
 }

@@ -2,7 +2,6 @@
 
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
-import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../core/accessibility/a11y_settings.dart';
@@ -13,6 +12,7 @@ import '../../../../core/maps/google_web_views.dart';
 import '../../../../core/network/route_geometry_service.dart';
 import '../../../../core/theme/colors.dart';
 import '../../../../core/utils/geo.dart';
+import '../../../../core/widgets/bus_occupancy_cutaway.dart';
 import '../../../../core/widgets/status_chip.dart';
 import '../../../../data/models/bus_position.dart';
 import '../../../../data/repositories/repository_providers.dart';
@@ -41,17 +41,17 @@ class WebLiveStatsPage extends ConsumerStatefulWidget {
 }
 
 class _WebLiveStatsPageState extends ConsumerState<WebLiveStatsPage> {
-  final MapController _mapController = MapController();
   String? _selectedLineFilter;
   String? _focusedVehicleId;
   int _tableFilter = 0; // 0: All, 1: G1-G6, 2: P7-P19, 3: Electric, 4: Crowded (>=65%)
-  bool _showGoogleDirectionsEmbed = false;
+  bool _accessibleOnly = false;
 
   @override
   void initState() {
     super.initState();
     _selectedLineFilter = widget.initialLineId;
     _focusedVehicleId = widget.initialVehicleId;
+    _accessibleOnly = ref.read(a11ySettingsProvider).wheelchairAccessibleOnly;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || isFlutterTestEnvironment) return;
       final notifier = ref.read(googleLineRoutesProvider.notifier);
@@ -81,6 +81,7 @@ class _WebLiveStatsPageState extends ConsumerState<WebLiveStatsPage> {
       if (_selectedLineFilter != null && b.lineId != _selectedLineFilter) {
         return false;
       }
+      if (_accessibleOnly && !b.isWheelchairAccessible) return false;
       if (_tableFilter == 1 && !b.lineCode.startsWith('G')) return false;
       if (_tableFilter == 2 && !b.lineCode.startsWith('P')) return false;
       if (_tableFilter == 3 && !b.isElectric) return false;
@@ -114,7 +115,8 @@ class _WebLiveStatsPageState extends ConsumerState<WebLiveStatsPage> {
 
     final polylines3D = <GoogleMap3DPolylineData>[
       for (final line in seedLines)
-        if (_selectedLineFilter == null || _selectedLineFilter == line.id)
+        if ((!_accessibleOnly || line.isWheelchairAccessible) &&
+            (_selectedLineFilter == null || _selectedLineFilter == line.id))
           GoogleMap3DPolylineData(
             id: line.id,
             points: googleRoutesMap[
@@ -146,6 +148,8 @@ class _WebLiveStatsPageState extends ConsumerState<WebLiveStatsPage> {
           label:
               '${bus.lineCode} (${bus.vehicleId}) • ${bus.passengerCount}/${bus.vehicleCapacity} ${ws.passengersWord} (${bus.loadPercent}%) → ${bus.nextStopName}',
           isBus: true,
+          isWheelchairAccessible: bus.isWheelchairAccessible,
+          headingDegrees: bus.headingDegrees,
           color: seedLinesById[bus.lineId]?.color ?? MarpromColors.marpromRed,
         ),
       if (highlightedDirection != null && highlightedLine != null)
@@ -156,85 +160,9 @@ class _WebLiveStatsPageState extends ConsumerState<WebLiveStatsPage> {
               position: seedStopsById[stopId]!.position,
               label: seedStopsById[stopId]!.name,
               isBus: false,
+              isWheelchairAccessible: seedStopsById[stopId]!.isStepFree,
               color: highlightedLine.color,
             ),
-    ];
-
-    final polylines2D = <Polyline>[
-      for (final line in seedLines)
-        if (_selectedLineFilter == null || _selectedLineFilter == line.id)
-          Polyline(
-            points: googleRoutesMap[
-                        '${line.id}|${line.directions.first.id}']
-                    ?.polylinePoints ??
-                line.directions.first.roadPolyline ??
-                line.directions.first.polyline,
-            strokeWidth: _selectedLineFilter == line.id ||
-                    focusedBus?.lineId == line.id
-                ? 6.0
-                : 3.5,
-            color: line.color.withValues(
-              alpha: _selectedLineFilter == line.id ||
-                      focusedBus?.lineId == line.id
-                  ? 0.95
-                  : 0.72,
-            ),
-          ),
-    ];
-
-    final markers2D = <Marker>[
-      for (final bus in visibleBuses)
-        Marker(
-          point: bus.position,
-          width: 96,
-          height: 44,
-          child: GestureDetector(
-            onTap: () => setState(() => _focusedVehicleId = bus.vehicleId),
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              decoration: BoxDecoration(
-                color: seedLinesById[bus.lineId]?.color ??
-                    MarpromColors.marpromRed,
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(
-                  color: _focusedVehicleId == bus.vehicleId
-                      ? Colors.amberAccent
-                      : Colors.white,
-                  width: _focusedVehicleId == bus.vehicleId ? 2.5 : 1.5,
-                ),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.25),
-                    blurRadius: 6,
-                  ),
-                ],
-              ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    bus.lineCode,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.w900,
-                      fontSize: 11,
-                      height: 1.0,
-                    ),
-                  ),
-                  Text(
-                    '${bus.passengerCount}/${bus.vehicleCapacity}',
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.w700,
-                      fontSize: 9.5,
-                      height: 1.15,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
     ];
 
     return Padding(
@@ -379,127 +307,109 @@ class _WebLiveStatsPageState extends ConsumerState<WebLiveStatsPage> {
                               ),
                             ],
                           ),
-                          if (highlightedLineId != null)
-                            OutlinedButton.icon(
-                              onPressed: () => setState(
-                                () => _showGoogleDirectionsEmbed =
-                                    !_showGoogleDirectionsEmbed,
-                              ),
-                              icon: const Icon(Icons.directions_rounded, size: 16),
-                              label: Text(
-                                _showGoogleDirectionsEmbed
-                                    ? 'Nazaj na 3D floto'
-                                    : 'Google Maps trasa linije $highlightedLineId',
-                              ),
-                            ),
                         ],
                       ),
                     ),
                     SizedBox(
                       height: 520,
-                      child: _showGoogleDirectionsEmbed &&
-                              highlightedLineId != null
-                          ? GoogleDirectionsEmbedPlatformView(
-                              origin: focusedBus != null
-                                  ? '${focusedBus.position.latitude},${focusedBus.position.longitude}'
-                                  : '${seedStopsById[seedLinesById[highlightedLineId]!.directions.first.stopIds.first]!.name}, Maribor, Slovenia',
-                              destination:
-                                  '${seedStopsById[seedLinesById[highlightedLineId]!.directions.first.terminalStopId]!.name}, Maribor, Slovenia',
-                              mode: 'transit',
-                            )
-                          : GoogleMap3DWidget(
-                              initialCenter: mapCenter,
-                              mapController: _mapController,
-                              initialUse3D: !kIsWeb,
-                              showPresets: kIsWeb,
-                              fitBounds: highlightedLineId != null,
-                              fitSignature:
-                                  '$highlightedLineId|$highlightedDirectionId|${focusedGoogleRoute?.polylinePoints.length ?? 0}',
-                              polylines3D: polylines3D,
-                              markers3D: markers3D,
-                              polylines2D: polylines2D,
-                              markers2D: markers2D,
-                              activeBusCount: visibleBuses.length,
-                              totalPassengers: visibleBuses.fold<int>(
-                                0,
-                                (sum, b) => sum + b.passengerCount,
-                              ),
-                              onFullScreenToggle: () => openFullScreenTransitMap(
-                                context,
-                                initialLineId: highlightedLineId,
-                                initialDirectionId: highlightedDirectionId,
-                                initialVehicleId: _focusedVehicleId,
-                              ),
-                            ),
+                      child: GoogleMap3DWidget(
+                        initialCenter: mapCenter,
+                        initialUse3D: !kIsWeb,
+                        showPresets: kIsWeb,
+                        fitBounds: highlightedLineId != null,
+                        fitSignature:
+                            '$highlightedLineId|$highlightedDirectionId|${focusedGoogleRoute?.polylinePoints.length ?? 0}',
+                        polylines3D: polylines3D,
+                        markers3D: markers3D,
+                        activeBusCount: visibleBuses.length,
+                        totalPassengers: visibleBuses.fold<int>(
+                          0,
+                          (sum, b) => sum + b.passengerCount,
+                        ),
+                        onFullScreenToggle: () => openFullScreenTransitMap(
+                          context,
+                          initialLineId: highlightedLineId,
+                          initialDirectionId: highlightedDirectionId,
+                          initialVehicleId: _focusedVehicleId,
+                        ),
+                      ),
                     ),
-                    if (focusedBus != null)
+                    if (focusedBus != null) ...[
                       Container(
                         padding: const EdgeInsets.all(16),
                         color: MarpromColors.marpromCharcoal,
-                        child: Wrap(
-                          spacing: 18,
-                          runSpacing: 10,
-                          alignment: WrapAlignment.spaceBetween,
-                          crossAxisAlignment: WrapCrossAlignment.center,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
                           children: [
-                            Row(
-                              mainAxisSize: MainAxisSize.min,
+                            Wrap(
+                              spacing: 18,
+                              runSpacing: 10,
+                              alignment: WrapAlignment.spaceBetween,
+                              crossAxisAlignment: WrapCrossAlignment.center,
                               children: [
-                                Container(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 10,
-                                    vertical: 5,
-                                  ),
-                                  decoration: BoxDecoration(
-                                    color: MarpromColors.marpromRed,
-                                    borderRadius: BorderRadius.circular(8),
-                                  ),
-                                  child: Text(
-                                    focusedBus.lineCode,
-                                    style: const TextStyle(
-                                      color: Colors.white,
-                                      fontWeight: FontWeight.w900,
-                                    ),
-                                  ),
-                                ),
-                                const SizedBox(width: 12),
-                                Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                Row(
+                                  mainAxisSize: MainAxisSize.min,
                                   children: [
-                                    Text(
-                                      '${focusedBus.vehicleId} • ${focusedBus.directionName}',
-                                      style: const TextStyle(
-                                        color: Colors.white,
-                                        fontWeight: FontWeight.w800,
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 10,
+                                        vertical: 5,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: MarpromColors.marpromRed,
+                                        borderRadius: BorderRadius.circular(8),
+                                      ),
+                                      child: Text(
+                                        focusedBus.lineCode,
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontWeight: FontWeight.w900,
+                                        ),
                                       ),
                                     ),
-                                    Text(
-                                      'Naslednja postaja: ${focusedBus.nextStopName} (${(focusedBus.etaToNextStopSeconds / 60).ceil()} min) • '
-                                      '${focusedBus.passengerCount}/${focusedBus.vehicleCapacity} ${ws.passengersWord} (${focusedBus.loadPercent}%) • '
-                                      '${focusedBus.speedKmh} km/h'
-                                      '${focusedGoogleRoute != null ? ' • Trasa: ${focusedGoogleRoute.formattedDistanceKm}' : ''}',
-                                      style: const TextStyle(
-                                        color: Color(0xFFCBD5E1),
-                                        fontSize: 12,
-                                      ),
+                                    const SizedBox(width: 12),
+                                    Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          '${focusedBus.vehicleId} • ${focusedBus.directionName}',
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                            fontWeight: FontWeight.w800,
+                                          ),
+                                        ),
+                                        Text(
+                                          'Naslednja postaja: ${focusedBus.nextStopName} (${(focusedBus.etaToNextStopSeconds / 60).ceil()} min) • '
+                                          '${focusedBus.passengerCount}/${focusedBus.vehicleCapacity} ${ws.passengersWord} (${focusedBus.loadPercent}%) • '
+                                          '${focusedBus.speedKmh} km/h'
+                                          '${focusedGoogleRoute != null ? ' • Trasa: ${focusedGoogleRoute.formattedDistanceKm}' : ''}',
+                                          style: const TextStyle(
+                                            color: Color(0xFFCBD5E1),
+                                            fontSize: 12,
+                                          ),
+                                        ),
+                                      ],
                                     ),
                                   ],
                                 ),
+                                TextButton(
+                                  onPressed: () => setState(
+                                    () => _focusedVehicleId = null,
+                                  ),
+                                  child: const Text(
+                                    'Skrij fokus',
+                                    style: TextStyle(color: Colors.white),
+                                  ),
+                                ),
                               ],
                             ),
-                            TextButton(
-                              onPressed: () => setState(() {
-                                _focusedVehicleId = null;
-                                _showGoogleDirectionsEmbed = false;
-                              }),
-                              child: const Text(
-                                'Skrij fokus',
-                                style: TextStyle(color: Colors.white),
-                              ),
-                            ),
+                            const SizedBox(height: 12),
+                            BusOccupancyCutaway.fromBusPosition(focusedBus),
                           ],
                         ),
                       ),
+                    ],
                   ],
                 ),
               ),
@@ -643,6 +553,16 @@ class _WebLiveStatsPageState extends ConsumerState<WebLiveStatsPage> {
                                 selected: _tableFilter == 4,
                                 onSelected: (_) =>
                                     setState(() => _tableFilter = 4),
+                              ),
+                              FilterChip(
+                                avatar: const Icon(
+                                  Icons.accessible_rounded,
+                                  size: 16,
+                                ),
+                                label: const Text('Samo dostopni'),
+                                selected: _accessibleOnly,
+                                onSelected: (v) =>
+                                    setState(() => _accessibleOnly = v),
                               ),
                             ],
                           ),
@@ -846,12 +766,6 @@ class _WebLiveStatsPageState extends ConsumerState<WebLiveStatsPage> {
                                                 )
                                                 .ensureLineLoaded(bus.lineId);
                                           }
-                                          try {
-                                            _mapController.move(
-                                              bus.position,
-                                              15.0,
-                                            );
-                                          } catch (_) {}
                                         },
                                       ),
                                     ),

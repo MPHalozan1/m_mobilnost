@@ -1,7 +1,6 @@
 // Live bus tracker with map/list views, early/late advice cards, alerts, and TTS.
 
 import 'package:flutter/material.dart';
-import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:latlong2/latlong.dart';
@@ -21,7 +20,7 @@ import 'package:m_mobilnost/core/utils/distance.dart';
 import 'package:m_mobilnost/core/utils/geo.dart';
 import 'package:m_mobilnost/core/utils/time_format.dart';
 import 'package:m_mobilnost/core/widgets/big_button.dart';
-import 'package:m_mobilnost/core/widgets/occupancy_strip.dart';
+import 'package:m_mobilnost/core/widgets/bus_occupancy_cutaway.dart';
 import 'package:m_mobilnost/core/widgets/offline_banner.dart';
 import 'package:m_mobilnost/core/widgets/state_views.dart';
 import 'package:m_mobilnost/core/widgets/status_chip.dart';
@@ -31,7 +30,6 @@ import 'package:m_mobilnost/data/models/bus_stop.dart';
 import 'package:m_mobilnost/data/repositories/repository_providers.dart';
 import 'package:m_mobilnost/features/lines/data/transit_providers.dart';
 import 'package:m_mobilnost/features/lines/presentation/widgets/line_badge.dart';
-import 'package:m_mobilnost/features/map/presentation/widgets/maribor_transit_map.dart';
 import 'package:m_mobilnost/l10n/app_localizations.dart';
 
 /// Tracks active Marprom buses live with advice cards, arrival alerts, and TTS.
@@ -62,6 +60,7 @@ class _LiveTrackerScreenState extends ConsumerState<LiveTrackerScreen> {
   String? _selectedStopId;
   String? _selectedVehicleId;
   bool _showMap = true;
+  bool _accessibleOnly = false;
   int? _notifyThresholdMinutes;
   String? _firedAlertKey;
 
@@ -71,6 +70,7 @@ class _LiveTrackerScreenState extends ConsumerState<LiveTrackerScreen> {
     _selectedLineId = widget.initialLineId;
     _selectedStopId = widget.initialStopId;
     _selectedVehicleId = widget.initialVehicleId;
+    _accessibleOnly = ref.read(a11ySettingsProvider).wheelchairAccessibleOnly;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || isFlutterTestEnvironment) return;
       final notifier = ref.read(googleLineRoutesProvider.notifier);
@@ -104,6 +104,9 @@ class _LiveTrackerScreenState extends ConsumerState<LiveTrackerScreen> {
     required Map<String, BusStop> stopsMap,
   }) {
     Iterable<BusPosition> candidates = allBuses;
+    if (_accessibleOnly) {
+      candidates = candidates.where((b) => b.isWheelchairAccessible);
+    }
     if (_selectedLineId != null) {
       candidates = candidates.where((b) => b.lineId == _selectedLineId);
     } else if (_selectedStopId != null) {
@@ -600,6 +603,15 @@ class _LiveTrackerScreenState extends ConsumerState<LiveTrackerScreen> {
                   variant: BigButtonVariant.secondary,
                   onPressed: () => setState(() => _showMap = !_showMap),
                 ),
+                FilterChip(
+                  avatar: const Icon(Icons.accessible_rounded, size: 18),
+                  label: Text(l10n.linesLowFloor),
+                  selected: _accessibleOnly,
+                  onSelected: (v) => setState(() {
+                    _accessibleOnly = v;
+                    _selectedVehicleId = null;
+                  }),
+                ),
               ],
             ),
             if (matchingBuses.isNotEmpty) ...[
@@ -849,83 +861,26 @@ class _LiveTrackerScreenState extends ConsumerState<LiveTrackerScreen> {
                   ],
                 ),
                 const SizedBox(height: 12),
-                OccupancyStrip(level: bus.occupancy),
-                const SizedBox(height: 10),
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: Theme.of(context)
-                        .colorScheme
-                        .surfaceContainerHighest
-                        .withValues(alpha: 0.45),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+                BusOccupancyCutaway.fromBusPosition(bus),
+                if (googleRoute != null) ...[
+                  const SizedBox(height: 8),
+                  Row(
                     children: [
-                      Row(
-                        children: [
-                          Icon(
-                            Icons.groups_rounded,
-                            size: 18,
-                            color: Theme.of(context).colorScheme.primary,
-                          ),
-                          const SizedBox(width: 6),
-                          Expanded(
-                            child: Text(
-                              '${bus.passengerCount} / ${bus.vehicleCapacity} potnikov (${bus.loadPercent}%)',
-                              style: Theme.of(context)
-                                  .textTheme
-                                  .titleSmall
-                                  ?.copyWith(fontWeight: FontWeight.w800),
-                            ),
-                          ),
-                        ],
+                      const Icon(
+                        Icons.alt_route_rounded,
+                        size: 16,
+                        color: MarpromColors.marpromRed,
                       ),
-                      const SizedBox(height: 6),
-                      Row(
-                        children: [
-                          Icon(
-                            bus.isElectric
-                                ? Icons.electric_bolt_rounded
-                                : Icons.directions_bus_rounded,
-                            size: 16,
-                            color: bus.isElectric
-                                ? const Color(0xFF6D28D9)
-                                : Theme.of(context).colorScheme.onSurfaceVariant,
-                          ),
-                          const SizedBox(width: 6),
-                          Expanded(
-                            child: Text(
-                              '${bus.vehicleId} • ${bus.vehicleModel} • ${bus.speedKmh.toStringAsFixed(0)} km/h',
-                              style: Theme.of(context).textTheme.bodySmall,
-                            ),
-                          ),
-                        ],
-                      ),
-                      if (googleRoute != null) ...[
-                        const SizedBox(height: 6),
-                        Row(
-                          children: [
-                            const Icon(
-                              Icons.alt_route_rounded,
-                              size: 16,
-                              color: MarpromColors.marpromRed,
-                            ),
-                            const SizedBox(width: 6),
-                            Expanded(
-                              child: Text(
-                                'Google Routes trasa: ${googleRoute.formattedDistanceKm} (~${googleRoute.formattedDurationMinutes})',
-                                style: Theme.of(context).textTheme.bodySmall,
-                              ),
-                            ),
-                          ],
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: Text(
+                          'Google Routes trasa: ${googleRoute.formattedDistanceKm} (~${googleRoute.formattedDurationMinutes})',
+                          style: Theme.of(context).textTheme.bodySmall,
                         ),
-                      ],
+                      ),
                     ],
                   ),
-                ),
+                ],
                 const SizedBox(height: 16),
                 Wrap(
                   spacing: 10,
@@ -1052,90 +1007,6 @@ class _LiveTrackerScreenState extends ConsumerState<LiveTrackerScreen> {
             const <LatLng>[])
         : (direction?.polyline ?? const <LatLng>[]);
     final points = resolvedPoints;
-    final fit = points.length >= 2
-        ? CameraFit.bounds(
-            bounds: LatLngBounds.fromPoints(points),
-            padding: const EdgeInsets.all(36),
-            maxZoom: 15.5,
-          )
-        : null;
-
-    final markers = <Marker>[
-      if (direction != null)
-        for (final stopId in direction.stopIds)
-          if (stopsMap[stopId] != null)
-            Marker(
-              point: stopsMap[stopId]!.position,
-              width: 56,
-              height: 56,
-              child: Semantics(
-                button: true,
-                label: stopsMap[stopId]!.name,
-                child: GestureDetector(
-                  onTap: () => context.push(
-                    '/stops/${Uri.encodeComponent(stopId)}',
-                  ),
-                  child: Center(
-                    child: Container(
-                      width: stopId == bus?.nextStopId ? 24 : 18,
-                      height: stopId == bus?.nextStopId ? 24 : 18,
-                      decoration: BoxDecoration(
-                        color: stopId == bus?.nextStopId
-                            ? lineColor
-                            : Theme.of(context).colorScheme.surface,
-                        shape: BoxShape.circle,
-                        border: Border.all(
-                          color: stopId == bus?.nextStopId
-                              ? Colors.white
-                              : lineColor,
-                          width: 2.5,
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-      if (bus != null)
-        Marker(
-          point: bus.position,
-          width: 72,
-          height: 56,
-          child: Semantics(
-            label: '${l10n.linesBadge(bus.lineCode)} (${bus.nextStopName})',
-            child: Center(
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                decoration: BoxDecoration(
-                  color: lineColor,
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: Colors.white, width: 2.5),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(
-                      Icons.directions_bus_rounded,
-                      size: 15,
-                      color: Colors.white,
-                    ),
-                    const SizedBox(width: 4),
-                    Text(
-                      bus.lineCode,
-                      textScaler: TextScaler.noScaling,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-        ),
-    ];
 
     final polylines3D = <GoogleMap3DPolylineData>[
       if (points.length >= 2 && line != null && direction != null)
@@ -1156,6 +1027,8 @@ class _LiveTrackerScreenState extends ConsumerState<LiveTrackerScreen> {
               position: stopsMap[stopId]!.position,
               label: stopsMap[stopId]!.name,
               isBus: false,
+              isWheelchairAccessible: stopsMap[stopId]!.isStepFree,
+              color: lineColor,
             ),
       if (bus != null)
         GoogleMap3DMarkerData(
@@ -1165,26 +1038,11 @@ class _LiveTrackerScreenState extends ConsumerState<LiveTrackerScreen> {
           label:
               '${bus.lineCode} • ${bus.passengerCount}/${bus.vehicleCapacity} potnikov → ${bus.nextStopName}',
           isBus: true,
+          isWheelchairAccessible: bus.isWheelchairAccessible,
+          headingDegrees: bus.headingDegrees,
           color: lineColor,
         ),
     ];
-
-    if (isFlutterTestEnvironment) {
-      return MariborTransitMap(
-        key: ValueKey('tracker_map_${line?.id ?? 'none'}_${direction?.id ?? 'none'}'),
-        initialCenter: bus?.position ?? GeoUtils.mariborCenter,
-        initialCameraFit: fit,
-        polylines: [
-          if (points.length >= 2)
-            Polyline(
-              points: points,
-              strokeWidth: 6,
-              color: lineColor,
-            ),
-        ],
-        markers: markers,
-      );
-    }
 
     return GoogleMap3DWidget(
       key: ValueKey('tracker_3d_${line?.id ?? 'none'}_${direction?.id ?? 'none'}'),
@@ -1199,15 +1057,6 @@ class _LiveTrackerScreenState extends ConsumerState<LiveTrackerScreen> {
       totalPassengers: bus?.passengerCount,
       polylines3D: polylines3D,
       markers3D: markers3D,
-      polylines2D: [
-        if (points.length >= 2)
-          Polyline(
-            points: points,
-            strokeWidth: 6,
-            color: lineColor,
-          ),
-      ],
-      markers2D: markers,
       onFullScreenToggle: () => openFullScreenTransitMap(
         context,
         initialLineId: line?.id,

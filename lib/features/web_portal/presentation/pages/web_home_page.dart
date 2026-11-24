@@ -1,5 +1,6 @@
 // Marprom Maribor Web Portal landing & introduction page with Quick Planner & Live KPIs.
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -488,9 +489,10 @@ class _WebHomePageState extends ConsumerState<WebHomePage> {
           ),
         ),
 
-        // 5. Mobile App APK & iOS Promo Banner
-        Padding(
-          padding: const EdgeInsets.fromLTRB(24, 28, 24, 8),
+        // 5. Mobile App APK & iOS Promo Banner (Web-only)
+        if (kIsWeb)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(24, 28, 24, 8),
           child: Center(
             child: ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 1320),

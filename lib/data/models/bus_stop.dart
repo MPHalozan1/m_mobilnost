@@ -1,4 +1,6 @@
-// Defines the BusStop domain model representing a Maribor bus stop and its amenities.
+//**********************************************
+// BusStop domain model with Firestore sync    *
+//**********************************************
 
 import 'package:flutter/foundation.dart';
 import 'package:latlong2/latlong.dart';
@@ -80,6 +82,48 @@ class BusStop {
       hasTactile: hasTactile ?? this.hasTactile,
       isStepFree: isStepFree ?? this.isStepFree,
       hasDigitalDisplay: hasDigitalDisplay ?? this.hasDigitalDisplay,
+    );
+  }
+
+  /// Serializes this stop for the Cloud Firestore `stations` collection.
+  Map<String, dynamic> toFirestore() => {
+        'id': id,
+        'name': name,
+        'lat': position.latitude,
+        'lng': position.longitude,
+        'lineIds': lineIds,
+        'directionLabels': directionLabels,
+        'platform': platform,
+        'hasShelter': hasShelter,
+        'hasBench': hasBench,
+        'hasTactile': hasTactile,
+        'isStepFree': isStepFree,
+        'hasDigitalDisplay': hasDigitalDisplay,
+      };
+
+  /// Reconstructs a [BusStop] from a Firestore `stations` document map.
+  factory BusStop.fromFirestore(Map<String, dynamic> data, String docId) {
+    final lat = (data['lat'] as num?)?.toDouble() ?? 46.5547;
+    final lng = (data['lng'] as num?)?.toDouble() ?? 15.6459;
+    final rawLines = (data['lineIds'] as List<dynamic>? ?? const [])
+        .map((e) => e.toString())
+        .toList(growable: false);
+    final rawDirs = (data['directionLabels'] as Map?)?.map(
+          (k, v) => MapEntry(k.toString(), v.toString()),
+        ) ??
+        const <String, String>{};
+    return BusStop(
+      id: data['id'] as String? ?? docId,
+      name: data['name'] as String? ?? docId,
+      position: LatLng(lat, lng),
+      lineIds: rawLines,
+      directionLabels: rawDirs,
+      platform: data['platform'] as String?,
+      hasShelter: data['hasShelter'] as bool? ?? false,
+      hasBench: data['hasBench'] as bool? ?? false,
+      hasTactile: data['hasTactile'] as bool? ?? false,
+      isStepFree: data['isStepFree'] as bool? ?? false,
+      hasDigitalDisplay: data['hasDigitalDisplay'] as bool? ?? false,
     );
   }
 }

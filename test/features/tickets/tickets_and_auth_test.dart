@@ -310,7 +310,7 @@ void main() {
       addTearDown(container.dispose);
 
       await container.read(authRepositoryProvider).signUp(
-            email: 'minor17@maribor.test',
+            email: 'minor17@gmail.com',
             password: 'pass1234',
             name: 'Rok Minor',
             dateOfBirth: DateTime(DateTime.now().year - 17, 1, 1),
@@ -369,7 +369,7 @@ void main() {
       expect(find.text('Continue with Google'), findsOneWidget);
 
       // Quick-fill demo credentials and sign in.
-      final demoBtn = find.text('Demo user: demo@marprom.test / demo1234');
+      final demoBtn = find.text('Demo user: demo@marprom.si / demo1234');
       await tester.ensureVisible(demoBtn);
       await tester.pumpAndSettle();
       await tester.tap(demoBtn);
@@ -460,7 +460,7 @@ void main() {
       );
       await tester.enterText(
         find.widgetWithText(TextFormField, 'Email address'),
-        'maja@maribor.test',
+        'maja@gmail.com',
       );
       await tester.enterText(
         find.widgetWithText(TextFormField, 'Password'),

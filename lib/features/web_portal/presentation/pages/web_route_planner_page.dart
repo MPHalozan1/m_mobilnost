@@ -1,26 +1,30 @@
-// Split-screen Marprom Route Planner powered by Google Routes API v2 & Directions Iframe.
+//**********************************************
+// Web Route Planner with Multi-Bus Transfers  *
+//**********************************************
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:latlong2/latlong.dart';
 
+import '../../../../core/accessibility/a11y_settings.dart';
+import '../../../../core/firebase/firestore_transit_service.dart';
 import '../../../../core/maps/google_map_3d_widget.dart';
 import '../../../../core/maps/google_map_models.dart';
 import '../../../../core/maps/google_web_views.dart';
 import '../../../../core/network/google_routes_service.dart';
+import '../../../../core/network/route_geometry_service.dart';
 import '../../../../core/theme/colors.dart';
 import '../../../../core/utils/time_format.dart';
 import '../../../../core/widgets/occupancy_strip.dart';
 import '../../../../data/models/bus_stop.dart';
 import '../../../../data/models/trip_plan.dart';
+import '../../../../data/repositories/repository_providers.dart';
 import '../../../../data/seed/seed_lines.dart';
 import '../../../../data/seed/seed_stops.dart';
 import '../../../trip_planner/domain/route_planner.dart';
 
-/// Marprom Web Route Planner (`/plan`) combining:
-/// 1) Google Routes API v2 (`directions/v2:computeRoutes`) distance, duration & polyline
-/// 2) Marprom G1–G6 & P7–P19 transit route itineraries with boarding occupancy
-/// 3) Interactive Google Maps Directions `<iframe>` alongside Google Maps 3D preview.
+/// Marprom Web Route Planner (`/plan`) powered by Google Routes API v2
+/// (`TRANSIT` + `DRIVE`) and the multi-transfer Marprom G1–G6 & P7–P19 solver.
 class WebRoutePlannerPage extends ConsumerStatefulWidget {
   /// Creates a [WebRoutePlannerPage].
   const WebRoutePlannerPage({
@@ -57,16 +61,18 @@ class _WebRoutePlannerPageState extends ConsumerState<WebRoutePlannerPage> {
   bool _useCustomAddress = false;
   bool _avoidTolls = false;
   bool _avoidHighways = false;
-  String _mapMode = 'transit'; // 'transit' or 'driving'
-  bool _show3DTab = false;
+  bool _accessibleOnly = false;
+  TripSortMode _sortMode = TripSortMode.fastest;
 
   bool _loading = false;
   GoogleRouteResult? _googleRoute;
   List<TripOption> _busOptions = const [];
+  int _selectedOptionIndex = 0;
 
   @override
   void initState() {
     super.initState();
+    _accessibleOnly = ref.read(a11ySettingsProvider).wheelchairAccessibleOnly;
     if (widget.initialFromStopId != null &&
         seedStopsById.containsKey(widget.initialFromStopId)) {
       _fromStopId = widget.initialFromStopId!;
@@ -145,6 +151,9 @@ class _WebRoutePlannerPageState extends ConsumerState<WebRoutePlannerPage> {
           destination: toStop.position,
           originLabel: fromStop.name,
           destinationLabel: toStop.name,
+          accessibleOnly: _accessibleOnly,
+          sortMode: _sortMode,
+          fewerTransfers: _sortMode == TripSortMode.fewestTransfers,
           targetTime: DateTime.now(),
         ),
       ]);
@@ -161,6 +170,7 @@ class _WebRoutePlannerPageState extends ConsumerState<WebRoutePlannerPage> {
     setState(() {
       _googleRoute = routeResult;
       _busOptions = transitOptions;
+      _selectedOptionIndex = 0;
       _loading = false;
     });
   }
@@ -172,12 +182,10 @@ class _WebRoutePlannerPageState extends ConsumerState<WebRoutePlannerPage> {
     String? customDest,
     bool avoidTolls = false,
     bool avoidHighways = false,
-    String mode = 'transit',
   }) {
     setState(() {
       _avoidTolls = avoidTolls;
       _avoidHighways = avoidHighways;
-      _mapMode = mode;
       if (customOrigin != null && customDest != null) {
         _useCustomAddress = true;
         _originAddressController.text = customOrigin;
@@ -207,9 +215,113 @@ class _WebRoutePlannerPageState extends ConsumerState<WebRoutePlannerPage> {
         ? _destAddressController.text.trim()
         : 'Pohorska vzpenjaca, Maribor';
 
-    final routePoints = _googleRoute?.polylinePoints ?? const <LatLng>[];
-    final center3D = routePoints.isNotEmpty
-        ? routePoints[routePoints.length ~/ 2]
+    final googleRoutesMap = ref.watch(googleLineRoutesProvider);
+    final selectedBusOption = (!_useCustomAddress && _busOptions.isNotEmpty)
+        ? _busOptions[_selectedOptionIndex.clamp(0, _busOptions.length - 1)]
+        : null;
+
+    final mapPolylines3D = <GoogleMap3DPolylineData>[];
+    final mapMarkers3D = <GoogleMap3DMarkerData>[];
+    final allMapPoints = <LatLng>[];
+
+    if (selectedBusOption != null) {
+      for (var i = 0; i < selectedBusOption.legs.length; i++) {
+        final leg = selectedBusOption.legs[i];
+        var pts = leg.polyline;
+        if (leg.type == TripLegType.bus &&
+            leg.lineId != null &&
+            leg.directionId != null &&
+            pts.length >= 2) {
+          final full = googleRoutesMap['${leg.lineId}|${leg.directionId}']
+              ?.polylinePoints;
+          if (full != null && full.length >= 2) {
+            pts = slicePolylineBetweenPoints(full, pts.first, pts.last);
+          }
+        }
+        if (pts.isEmpty) continue;
+        allMapPoints.addAll(pts);
+        final isWalk = leg.type == TripLegType.walk;
+        final lineColor =
+            seedLinesById[leg.lineId]?.color ?? MarpromColors.marpromRed;
+        if (pts.length >= 2) {
+          mapPolylines3D.add(
+            GoogleMap3DPolylineData(
+              id: 'web_leg_${selectedBusOption.id}_$i',
+              points: pts,
+              color: isWalk ? scheme.outline : lineColor,
+              strokeWidth: isWalk ? 4.0 : 6.5,
+              isDashed: isWalk,
+            ),
+          );
+        }
+        if (i == 0) {
+          mapMarkers3D.add(
+            GoogleMap3DMarkerData(
+              id: 'origin_pt',
+              position: pts.first,
+              label: leg.fromName,
+              color: scheme.secondary,
+            ),
+          );
+        }
+        if (!isWalk) {
+          mapMarkers3D.add(
+            GoogleMap3DMarkerData(
+              id: 'board_$i',
+              position: pts.first,
+              shortLabel: leg.lineCode,
+              isBus: leg.lineCode != null,
+              isWheelchairAccessible: leg.isAccessible,
+              label: '${leg.lineCode ?? ''} • ${leg.fromName}',
+              color: lineColor,
+            ),
+          );
+          mapMarkers3D.add(
+            GoogleMap3DMarkerData(
+              id: 'alight_$i',
+              position: pts.last,
+              label: leg.toName,
+              color: lineColor,
+            ),
+          );
+        }
+        if (i == selectedBusOption.legs.length - 1) {
+          mapMarkers3D.add(
+            GoogleMap3DMarkerData(
+              id: 'dest_pt',
+              position: pts.last,
+              label: leg.toName,
+              color: MarpromColors.marpromRed,
+            ),
+          );
+        }
+      }
+    } else if (_googleRoute != null && _googleRoute!.polylinePoints.length >= 2) {
+      allMapPoints.addAll(_googleRoute!.polylinePoints);
+      mapPolylines3D.add(
+        GoogleMap3DPolylineData(
+          id: 'planned_route',
+          points: _googleRoute!.polylinePoints,
+          color: MarpromColors.marpromRed,
+          strokeWidth: 7,
+        ),
+      );
+      mapMarkers3D.addAll([
+        GoogleMap3DMarkerData(
+          id: 'origin',
+          position: _googleRoute!.polylinePoints.first,
+          label: embedOrigin,
+        ),
+        GoogleMap3DMarkerData(
+          id: 'dest',
+          position: _googleRoute!.polylinePoints.last,
+          label: embedDest,
+        ),
+      ]);
+    }
+
+    final center3D = allMapPoints.isNotEmpty
+        ? allMapPoints[allMapPoints.length ~/ 2]
         : (seedStopsById[_fromStopId]?.position ??
             const LatLng(46.5576, 15.6455));
 
@@ -268,24 +380,11 @@ class _WebRoutePlannerPageState extends ConsumerState<WebRoutePlannerPage> {
                     ),
                   ),
                   ActionChip(
-                    avatar: const Icon(Icons.api_rounded, size: 16),
-                    label: const Text('Google Routes API Demo (Mountain View → Stanford)'),
+                    avatar: const Icon(Icons.transfer_within_a_station_rounded, size: 16),
+                    label: const Text('Koroška vrata → Pohorska vzpenjača (Prestop)'),
                     onPressed: () => _applyPreset(
-                      customOrigin:
-                          '1600 Amphitheatre Parkway, Mountain View, CA',
-                      customDest: '450 Serra Mall, Stanford, CA',
-                      mode: 'driving',
-                    ),
-                  ),
-                  ActionChip(
-                    avatar: const Icon(Icons.explore_rounded, size: 16),
-                    label: const Text('Oslo → Telemark (avoid tolls|highways)'),
-                    onPressed: () => _applyPreset(
-                      customOrigin: 'Oslo Norway',
-                      customDest: 'Telemark Norway',
-                      avoidTolls: true,
-                      avoidHighways: true,
-                      mode: 'driving',
+                      fromStop: 'koroska_vrata',
+                      toStop: 'vzpenjaca',
                     ),
                   ),
                 ],
@@ -317,7 +416,6 @@ class _WebRoutePlannerPageState extends ConsumerState<WebRoutePlannerPage> {
                                       onSelected: (_) {
                                         setState(() {
                                           _useCustomAddress = false;
-                                          _mapMode = 'transit';
                                           _syncAddressControllersFromStops();
                                         });
                                         _calculateRoute();
@@ -402,20 +500,51 @@ class _WebRoutePlannerPageState extends ConsumerState<WebRoutePlannerPage> {
                                 ],
                                 const SizedBox(height: 10),
                                 Wrap(
-                                  spacing: 12,
+                                  spacing: 8,
+                                  runSpacing: 8,
                                   children: [
-                                    FilterChip(
-                                      label: const Text('Brez cestnin (avoid tolls)'),
-                                      selected: _avoidTolls,
-                                      onSelected: (v) =>
-                                          setState(() => _avoidTolls = v),
+                                    ChoiceChip(
+                                      avatar: const Icon(Icons.bolt_rounded, size: 16),
+                                      label: const Text('Najhitrejša'),
+                                      selected: _sortMode == TripSortMode.fastest,
+                                      onSelected: (_) {
+                                        setState(() => _sortMode = TripSortMode.fastest);
+                                        _calculateRoute();
+                                      },
+                                    ),
+                                    ChoiceChip(
+                                      avatar: const Icon(Icons.transfer_within_a_station_rounded, size: 16),
+                                      label: const Text('Najmanj prestopov'),
+                                      selected:
+                                          _sortMode == TripSortMode.fewestTransfers,
+                                      onSelected: (_) {
+                                        setState(() => _sortMode = TripSortMode.fewestTransfers);
+                                        _calculateRoute();
+                                      },
                                     ),
                                     FilterChip(
-                                      label: const Text('Brez avtocest (avoid highways)'),
-                                      selected: _avoidHighways,
-                                      onSelected: (v) =>
-                                          setState(() => _avoidHighways = v),
+                                      avatar: const Icon(Icons.accessible_rounded, size: 16),
+                                      label: const Text('Dostopno za voziček'),
+                                      selected: _accessibleOnly,
+                                      onSelected: (v) {
+                                        setState(() => _accessibleOnly = v);
+                                        _calculateRoute();
+                                      },
                                     ),
+                                    if (_useCustomAddress) ...[
+                                      FilterChip(
+                                        label: const Text('Brez cestnin'),
+                                        selected: _avoidTolls,
+                                        onSelected: (v) =>
+                                            setState(() => _avoidTolls = v),
+                                      ),
+                                      FilterChip(
+                                        label: const Text('Brez avtocest'),
+                                        selected: _avoidHighways,
+                                        onSelected: (v) =>
+                                            setState(() => _avoidHighways = v),
+                                      ),
+                                    ],
                                   ],
                                 ),
                                 const SizedBox(height: 16),
@@ -566,8 +695,13 @@ class _WebRoutePlannerPageState extends ConsumerState<WebRoutePlannerPage> {
                               ),
                             )
                           else
-                            for (final opt in _busOptions) ...[
-                              _BusItineraryCard(option: opt),
+                            for (var i = 0; i < _busOptions.length; i++) ...[
+                              _BusItineraryCard(
+                                option: _busOptions[i],
+                                isSelected: i == _selectedOptionIndex,
+                                onTap: () =>
+                                    setState(() => _selectedOptionIndex = i),
+                              ),
                               const SizedBox(height: 10),
                             ],
                         ],
@@ -577,7 +711,7 @@ class _WebRoutePlannerPageState extends ConsumerState<WebRoutePlannerPage> {
 
                   SizedBox(width: isWide ? 24 : 0, height: isWide ? 0 : 24),
 
-                  // Right Map Panel: Google Maps Directions <iframe> + 3D Map Toggle
+                  // Right Map Panel: Real Google Maps Vector 2D & 3D Flyover
                   Expanded(
                     flex: isWide ? 6 : 0,
                     child: Card(
@@ -592,94 +726,99 @@ class _WebRoutePlannerPageState extends ConsumerState<WebRoutePlannerPage> {
                             ),
                             color: scheme.surfaceContainerHighest
                                 .withValues(alpha: 0.4),
-                            child: Wrap(
-                              spacing: 8,
-                              runSpacing: 8,
-                              alignment: WrapAlignment.spaceBetween,
-                              crossAxisAlignment: WrapCrossAlignment.center,
+                            child: Row(
                               children: [
-                                Wrap(
-                                  spacing: 8,
-                                  children: [
-                                    ChoiceChip(
-                                      avatar: const Icon(
-                                        Icons.directions_rounded,
-                                        size: 16,
-                                      ),
-                                      label: const Text(
-                                        'Google Maps Embed (iframe)',
-                                      ),
-                                      selected: !_show3DTab,
-                                      onSelected: (_) =>
-                                          setState(() => _show3DTab = false),
-                                    ),
-                                    ChoiceChip(
-                                      avatar: const Icon(
-                                        Icons.view_in_ar_rounded,
-                                        size: 16,
-                                      ),
-                                      label: const Text('Google 3D Trasa'),
-                                      selected: _show3DTab,
-                                      onSelected: (_) =>
-                                          setState(() => _show3DTab = true),
-                                    ),
-                                  ],
+                                const Icon(
+                                  Icons.route_rounded,
+                                  size: 18,
+                                  color: MarpromColors.marpromRed,
                                 ),
-                                SegmentedButton<String>(
-                                  segments: const [
-                                    ButtonSegment(
-                                      value: 'transit',
-                                      label: Text('Avtobus'),
-                                    ),
-                                    ButtonSegment(
-                                      value: 'driving',
-                                      label: Text('Avto'),
-                                    ),
-                                  ],
-                                  selected: {_mapMode},
-                                  onSelectionChanged: (s) => setState(
-                                    () => _mapMode = s.first,
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    selectedBusOption != null
+                                        ? 'Google Maps trasa (${selectedBusOption.transferCount == 0 ? 'direktna linija' : '${selectedBusOption.transferCount} prestop'})'
+                                        : 'Google Maps Routes API v2 trasa',
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .titleSmall
+                                        ?.copyWith(fontWeight: FontWeight.w800),
                                   ),
                                 ),
+                                if (selectedBusOption != null)
+                                  TextButton.icon(
+                                    onPressed: () async {
+                                      final user = ref.read(currentUserProvider).valueOrNull;
+                                      if (user == null) {
+                                        if (mounted) {
+                                          ScaffoldMessenger.of(context).showSnackBar(
+                                            const SnackBar(
+                                              content: Text('Za shranjevanje poti se prijavite v račun.'),
+                                            ),
+                                          );
+                                        }
+                                        return;
+                                      }
+                                      final from = seedStopsById[_fromStopId];
+                                      final to = seedStopsById[_toStopId];
+                                      final lineIds = selectedBusOption.legs
+                                          .where((l) => l.lineCode != null)
+                                          .map((l) => l.lineCode!)
+                                          .toSet()
+                                          .toList(growable: false);
+                                      final now = DateTime.now();
+                                      await ref.read(firestoreTransitServiceProvider).saveRoute(
+                                            SavedRouteRecord(
+                                              id: 'route_${now.millisecondsSinceEpoch}',
+                                              userId: user.id,
+                                              originName: from?.name ?? embedOrigin,
+                                              destinationName: to?.name ?? embedDest,
+                                              originStopId: from?.id,
+                                              destinationStopId: to?.id,
+                                              originLat: from?.position.latitude,
+                                              originLng: from?.position.longitude,
+                                              destinationLat: to?.position.latitude,
+                                              destinationLng: to?.position.longitude,
+                                              lineIds: lineIds,
+                                              accessibleOnly: _accessibleOnly,
+                                              createdAt: now,
+                                              updatedAt: now,
+                                            ),
+                                          );
+                                      if (!context.mounted) return;
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        const SnackBar(
+                                          content: Text('Pot shranjena v račun.'),
+                                        ),
+                                      );
+                                    },
+                                    icon: const Icon(Icons.bookmark_add_outlined, size: 18),
+                                    label: const Text('Shrani pot'),
+                                  ),
+                                if (selectedBusOption?.isAccessible == true)
+                                  const Tooltip(
+                                    message: 'Vsi avtobusi dostopni z vozičkom',
+                                    child: Icon(
+                                      Icons.accessible_rounded,
+                                      size: 20,
+                                      color: MarpromColors.mobilityGreen,
+                                    ),
+                                  ),
                               ],
                             ),
                           ),
                           SizedBox(
                             height: 540,
-                            child: _show3DTab
-                                ? GoogleMap3DWidget(
-                                    initialCenter: center3D,
-                                    polylines3D: [
-                                      if (routePoints.length >= 2)
-                                        GoogleMap3DPolylineData(
-                                          id: 'planned_route',
-                                          points: routePoints,
-                                          color: MarpromColors.marpromRed,
-                                          strokeWidth: 7,
-                                        ),
-                                    ],
-                                    markers3D: [
-                                      if (routePoints.isNotEmpty) ...[
-                                        GoogleMap3DMarkerData(
-                                          id: 'origin',
-                                          position: routePoints.first,
-                                          label: embedOrigin,
-                                        ),
-                                        GoogleMap3DMarkerData(
-                                          id: 'dest',
-                                          position: routePoints.last,
-                                          label: embedDest,
-                                        ),
-                                      ],
-                                    ],
-                                  )
-                                : GoogleDirectionsEmbedPlatformView(
-                                    origin: embedOrigin,
-                                    destination: embedDest,
-                                    mode: _mapMode,
-                                    avoidTolls: _avoidTolls,
-                                    avoidHighways: _avoidHighways,
-                                  ),
+                            child: GoogleMap3DWidget(
+                              initialCenter: center3D,
+                              initialUse3D: false,
+                              showPresets: true,
+                              fitBounds: allMapPoints.length >= 2,
+                              fitSignature:
+                                  '${selectedBusOption?.id ?? 'raw'}|${allMapPoints.length}',
+                              polylines3D: mapPolylines3D,
+                              markers3D: mapMarkers3D,
+                            ),
                           ),
                         ],
                       ),
@@ -735,9 +874,15 @@ class _MetricTile extends StatelessWidget {
 }
 
 class _BusItineraryCard extends StatelessWidget {
-  const _BusItineraryCard({required this.option});
+  const _BusItineraryCard({
+    required this.option,
+    required this.isSelected,
+    required this.onTap,
+  });
 
   final TripOption option;
+  final bool isSelected;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
@@ -747,78 +892,124 @@ class _BusItineraryCard extends StatelessWidget {
         .toList(growable: false);
 
     return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text(
-                  '${TimeFormatUtils.formatTime24(option.departureTime)} → ${TimeFormatUtils.formatTime24(option.arrivalTime)}',
-                  style: Theme.of(context)
-                      .textTheme
-                      .titleMedium
-                      ?.copyWith(fontWeight: FontWeight.w800),
-                ),
-                Chip(
-                  label: Text(
-                    '${option.totalMinutes} min • ${option.transferCount == 0 ? 'Direktna' : '${option.transferCount} prestop'}',
-                    style: const TextStyle(
-                      fontWeight: FontWeight.w700,
-                      fontSize: 12,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
+        side: BorderSide(
+          color: isSelected ? MarpromColors.marpromRed : scheme.outlineVariant,
+          width: isSelected ? 2.0 : 1.0,
+        ),
+      ),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(14),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Expanded(
+                    child: Text(
+                      '${TimeFormatUtils.formatTime24(option.departureTime)} → ${TimeFormatUtils.formatTime24(option.arrivalTime)}',
+                      style: Theme.of(context)
+                          .textTheme
+                          .titleMedium
+                          ?.copyWith(fontWeight: FontWeight.w800),
                     ),
                   ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 10),
-            for (final leg in busLegs) ...[
-              Row(
-                children: [
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 9,
-                      vertical: 4,
+                  if (option.isAccessible) ...[
+                    const Icon(
+                      Icons.accessible_rounded,
+                      size: 18,
+                      color: MarpromColors.mobilityGreen,
                     ),
-                    decoration: BoxDecoration(
-                      color: seedLinesById[leg.lineId]?.color ??
-                          MarpromColors.marpromRed,
-                      borderRadius: BorderRadius.circular(6),
-                    ),
-                    child: Text(
-                      leg.lineCode ?? '',
+                    const SizedBox(width: 6),
+                  ],
+                  Chip(
+                    label: Text(
+                      '${option.totalMinutes} min • ${option.transferCount == 0 ? 'Direktna' : '${option.transferCount} prestop'}',
                       style: const TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.w800,
+                        fontWeight: FontWeight.w700,
                         fontSize: 12,
                       ),
                     ),
                   ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      '${leg.fromName} → ${leg.toName}',
-                      style: const TextStyle(fontWeight: FontWeight.w600),
-                    ),
-                  ),
-                  Text(
-                    '${leg.stopCount} postaj',
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: scheme.onSurfaceVariant,
-                    ),
-                  ),
                 ],
               ),
-              if (leg.occupancy != BusOccupancyLevel.unknown) ...[
-                const SizedBox(height: 6),
-                OccupancyStrip(level: leg.occupancy, compact: true),
+              if (option.transfers.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                for (final xfer in option.transfers)
+                  Container(
+                    width: double.infinity,
+                    margin: const EdgeInsets.only(bottom: 6),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 8,
+                    ),
+                    decoration: BoxDecoration(
+                      color: scheme.secondaryContainer.withValues(alpha: 0.55),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Text(
+                      'Prestop: ${xfer.alightingStopName}'
+                      '${xfer.boardingStopName != xfer.alightingStopName ? ' → ${xfer.boardingStopName}' : ''}'
+                      ' (${xfer.fromLineCode} → ${xfer.toLineCode}) • čakanje ${xfer.waitMinutes} min'
+                      '${xfer.walkMeters > 15 ? ' • hoja ${xfer.walkMeters.round()} m' : ''}',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            fontWeight: FontWeight.w700,
+                          ),
+                    ),
+                  ),
               ],
               const SizedBox(height: 8),
+              for (final leg in busLegs) ...[
+                Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 9,
+                        vertical: 4,
+                      ),
+                      decoration: BoxDecoration(
+                        color: seedLinesById[leg.lineId]?.color ??
+                            MarpromColors.marpromRed,
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Text(
+                        leg.lineCode ?? '',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.w800,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        '${leg.fromName} → ${leg.toName} (${TimeFormatUtils.formatTime24(leg.startTime)})',
+                        style: const TextStyle(fontWeight: FontWeight.w600),
+                      ),
+                    ),
+                    Text(
+                      '${leg.stopCount ?? 0} postaj',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+                if (leg.occupancy != BusOccupancyLevel.unknown) ...[
+                  const SizedBox(height: 6),
+                  OccupancyStrip(level: leg.occupancy, compact: true),
+                ],
+                const SizedBox(height: 8),
+              ],
             ],
-          ],
+          ),
         ),
       ),
     );

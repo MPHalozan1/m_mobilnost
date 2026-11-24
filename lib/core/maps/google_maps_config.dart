@@ -1,11 +1,13 @@
-// Central configuration for Google Maps Embed, Maps 3D JS/Mobile SDK, and Routes API v2.
+//**********************************************
+// Google Maps Platform configuration & styles *
+//**********************************************
 
-/// Holds Google Maps API keys and URL builders for Web, Android, and iOS.
+/// Holds Google Maps API keys, Vector Map ID, and Dark/Light styles.
 abstract final class GoogleMapsConfig {
   static const String _defaultApiKey =
       'AIzaSyCJZoVbBxzgU4tt8Z-t4r5wxFM5eUOLdcs';
 
-  /// Key used by Google Maps Embed API (`<iframe>`) and Maps JS 3D (`<gmp-map-3d>`).
+  /// Key used by Google Maps JS SDK on Web.
   static const String webApiKey = String.fromEnvironment(
     'GOOGLE_MAPS_WEB_KEY',
     defaultValue: _defaultApiKey,
@@ -17,13 +19,19 @@ abstract final class GoogleMapsConfig {
     defaultValue: _defaultApiKey,
   );
 
-  /// Key configured for Google Maps 3D SDK on Android (`AndroidManifest.xml`).
+  /// Cloud Map ID enabling WebGL Vector rendering & tilted 3D buildings on Web.
+  static const String vectorMapId = String.fromEnvironment(
+    'GOOGLE_MAPS_MAP_ID',
+    defaultValue: 'DEMO_MAP_ID',
+  );
+
+  /// Key configured for Google Maps SDK on Android (`AndroidManifest.xml`).
   static const String android3dApiKey = String.fromEnvironment(
     'GOOGLE_MAPS_ANDROID_3D_KEY',
     defaultValue: _defaultApiKey,
   );
 
-  /// Key configured for Google Maps 3D SDK on iOS (`AppDelegate.swift`).
+  /// Key configured for Google Maps SDK on iOS (`AppDelegate.swift`).
   static const String ios3dApiKey = String.fromEnvironment(
     'GOOGLE_MAPS_IOS_3D_KEY',
     defaultValue: _defaultApiKey,
@@ -34,25 +42,20 @@ abstract final class GoogleMapsConfig {
     'https://routes.googleapis.com/directions/v2:computeRoutes',
   );
 
-  /// Builds a validated Google Maps Embed v1 Directions URL for `<iframe>` embeds.
-  static Uri buildDirectionsEmbedUri({
-    required String origin,
-    required String destination,
-    String mode = 'transit',
-    bool avoidTolls = false,
-    bool avoidHighways = false,
-  }) {
-    final avoid = <String>[
-      if (avoidTolls) 'tolls',
-      if (avoidHighways) 'highways',
-    ];
-    final params = <String, String>{
-      'key': webApiKey,
-      'origin': origin.trim(),
-      'destination': destination.trim(),
-      'mode': mode,
-      if (avoid.isNotEmpty) 'avoid': avoid.join('|'),
-    };
-    return Uri.https('www.google.com', '/maps/embed/v1/directions', params);
-  }
+  /// Sleek dark JSON style applied to `google_maps_flutter` on Android/iOS.
+  static const String darkMapStyleJson = '''
+[
+  {"elementType":"geometry","stylers":[{"color":"#161315"}]},
+  {"elementType":"labels.text.fill","stylers":[{"color":"#b8adb1"}]},
+  {"elementType":"labels.text.stroke","stylers":[{"color":"#161315"}]},
+  {"featureType":"administrative","elementType":"geometry","stylers":[{"color":"#3b3236"}]},
+  {"featureType":"poi.park","elementType":"geometry","stylers":[{"color":"#18261f"}]},
+  {"featureType":"road","elementType":"geometry","stylers":[{"color":"#282225"}]},
+  {"featureType":"road","elementType":"geometry.stroke","stylers":[{"color":"#1b1719"}]},
+  {"featureType":"road.arterial","elementType":"geometry","stylers":[{"color":"#362d31"}]},
+  {"featureType":"road.highway","elementType":"geometry","stylers":[{"color":"#4a3238"}]},
+  {"featureType":"transit.line","elementType":"geometry","stylers":[{"color":"#382e32"}]},
+  {"featureType":"water","elementType":"geometry","stylers":[{"color":"#0c1d2e"}]}
+]
+''';
 }

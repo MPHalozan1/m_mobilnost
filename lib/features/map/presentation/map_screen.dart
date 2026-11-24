@@ -1,7 +1,6 @@
 // Interactive Maribor transit map with safe GPS fallback, list toggle, and split view.
 
 import 'package:flutter/material.dart';
-import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:latlong2/latlong.dart';
@@ -56,7 +55,6 @@ class MapScreen extends ConsumerStatefulWidget {
 }
 
 class _MapScreenState extends ConsumerState<MapScreen> {
-  final MapController _mapController = MapController();
   final TextEditingController _searchController = TextEditingController();
 
   String _query = '';
@@ -72,6 +70,7 @@ class _MapScreenState extends ConsumerState<MapScreen> {
   void initState() {
     super.initState();
     _highlightedLineId = widget.initialLineId;
+    _accessibleOnly = ref.read(a11ySettingsProvider).wheelchairAccessibleOnly;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || isFlutterTestEnvironment) return;
       final notifier = ref.read(googleLineRoutesProvider.notifier);
@@ -86,16 +85,7 @@ class _MapScreenState extends ConsumerState<MapScreen> {
   @override
   void dispose() {
     _searchController.dispose();
-    _mapController.dispose();
     super.dispose();
-  }
-
-  void _safeMoveMap(LatLng center, double zoom) {
-    try {
-      _mapController.move(center, zoom);
-    } catch (_) {
-      // MapController may not yet be attached when list view is active.
-    }
   }
 
   void _selectLineOrBus({
@@ -114,16 +104,6 @@ class _MapScreenState extends ConsumerState<MapScreen> {
     if (!isFlutterTestEnvironment) {
       ref.read(googleLineRoutesProvider.notifier).ensureLineLoaded(line.id);
     }
-    if (bus != null) {
-      _safeMoveMap(bus.position, 14.2);
-    } else {
-      final dir = resolvedDirId != null
-          ? line.directionById(resolvedDirId)
-          : line.directions.firstOrNull;
-      if (dir != null && dir.polyline.isNotEmpty) {
-        _safeMoveMap(dir.polyline[dir.polyline.length ~/ 2], 13.4);
-      }
-    }
   }
 
   Future<void> _openStopBottomSheet(
@@ -131,7 +111,6 @@ class _MapScreenState extends ConsumerState<MapScreen> {
     BusStop stop,
     Map<String, BusLine> linesMap,
   ) async {
-    _safeMoveMap(stop.position, 15.0);
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -181,7 +160,6 @@ class _MapScreenState extends ConsumerState<MapScreen> {
           if (target != null) {
             WidgetsBinding.instance.addPostFrameCallback((_) {
               if (!mounted) return;
-              _safeMoveMap(target.position, 15.2);
               _openStopBottomSheet(context, target, linesMap);
             });
           }
@@ -191,9 +169,14 @@ class _MapScreenState extends ConsumerState<MapScreen> {
           stops: stops,
           referencePoint: location.effectivePosition,
         );
-        final activeBuses = settings.useSimulatedLive && _showLiveBuses
+        final rawBuses = settings.useSimulatedLive && _showLiveBuses
             ? (liveBusesAsync.valueOrNull ?? const <BusPosition>[])
             : const <BusPosition>[];
+        final activeBuses = _accessibleOnly
+            ? rawBuses
+                .where((b) => b.isWheelchairAccessible)
+                .toList(growable: false)
+            : rawBuses;
         final highlightedLine =
             _highlightedLineId != null ? linesMap[_highlightedLineId!] : null;
 
@@ -320,8 +303,7 @@ class _MapScreenState extends ConsumerState<MapScreen> {
                       child: ManualLocationFallbackCard(
                         stops: stops,
                         selectedStop: location.manualStop,
-                        onManualStopChanged: (stop) =>
-                            _safeMoveMap(stop.position, 14.5),
+                        onManualStopChanged: (stop) => setState(() {}),
                       ),
                     ),
                   SizedBox(height: 360, child: mapStack),
@@ -348,8 +330,7 @@ class _MapScreenState extends ConsumerState<MapScreen> {
                     child: ManualLocationFallbackCard(
                       stops: stops,
                       selectedStop: location.manualStop,
-                      onManualStopChanged: (stop) =>
-                          _safeMoveMap(stop.position, 14.5),
+                      onManualStopChanged: (stop) => setState(() {}),
                     ),
                   ),
                 Expanded(child: mapStack),
@@ -551,122 +532,6 @@ class _MapScreenState extends ConsumerState<MapScreen> {
         const <LatLng>[];
     final activeBusLineIds = {for (final b in activeBuses) b.lineId};
 
-    final polylines = <Polyline>[
-      if (highlightedLine != null &&
-          highlightedDirection != null &&
-          roadPoints.length >= 2)
-        Polyline(
-          points: roadPoints,
-          strokeWidth: 6.5,
-          borderStrokeWidth: 2,
-          borderColor: Colors.white,
-          color: highlightedLine.color,
-        )
-      else
-        for (final line in linesMap.values)
-          if (line.directions.isNotEmpty &&
-              (googleRoutesMap.containsKey('${line.id}|${line.directions.first.id}') ||
-                  activeBusLineIds.contains(line.id)))
-            Polyline(
-              points: googleRoutesMap['${line.id}|${line.directions.first.id}']
-                      ?.polylinePoints ??
-                  line.directions.first.roadPolyline ??
-                  line.directions.first.polyline,
-              strokeWidth: activeBusLineIds.contains(line.id) ? 4.2 : 3.0,
-              color: line.color.withValues(alpha: 0.72),
-            ),
-    ];
-
-    final markers = <Marker>[
-      Marker(
-        point: location.effectivePosition,
-        width: 48,
-        height: 48,
-        child: Semantics(
-          label: location.isGps ? l10n.mapCenterOnMe : l10n.mapManualCenter,
-          child: Center(
-            child: Container(
-              width: 18,
-              height: 18,
-              decoration: BoxDecoration(
-                color: scheme.primary,
-                shape: BoxShape.circle,
-                border: Border.all(color: Colors.white, width: 2.5),
-              ),
-            ),
-          ),
-        ),
-      ),
-      for (final item in filteredStops)
-        Marker(
-          point: item.stop.position,
-          width: 48,
-          height: 48,
-          child: Semantics(
-            button: true,
-            label: item.stop.name,
-            child: GestureDetector(
-              onTap: () => _openStopBottomSheet(context, item.stop, linesMap),
-              child: Center(
-                child: Container(
-                  width: 12,
-                  height: 12,
-                  decoration: BoxDecoration(
-                    color: scheme.surface,
-                    shape: BoxShape.circle,
-                    border: Border.all(color: scheme.primary, width: 2.5),
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ),
-      for (final bus in activeBuses)
-        Marker(
-          point: bus.position,
-          width: 46,
-          height: 24,
-          child: Semantics(
-            button: true,
-            label: '${l10n.linesBadge(bus.lineCode)}: ${bus.nextStopName}',
-            child: GestureDetector(
-              onTap: () {
-                final line = linesMap[bus.lineId];
-                if (line != null) {
-                  _selectLineOrBus(
-                    line: line,
-                    directionId: bus.directionId,
-                    bus: bus,
-                  );
-                }
-              },
-              child: Center(
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 6,
-                    vertical: 3,
-                  ),
-                  decoration: BoxDecoration(
-                    color: linesMap[bus.lineId]?.color ?? scheme.secondary,
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: Colors.white, width: 1.8),
-                  ),
-                  child: Text(
-                    bus.lineCode,
-                    textScaler: TextScaler.noScaling,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 10.5,
-                      fontWeight: FontWeight.w800,
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ),
-    ];
-
     final polylines3D = <GoogleMap3DPolylineData>[
       if (highlightedLine != null &&
           highlightedDirection != null &&
@@ -679,18 +544,19 @@ class _MapScreenState extends ConsumerState<MapScreen> {
         )
       else
         for (final line in linesMap.values)
-          if (line.directions.isNotEmpty &&
-              (googleRoutesMap.containsKey('${line.id}|${line.directions.first.id}') ||
-                  activeBusLineIds.contains(line.id)))
-            GoogleMap3DPolylineData(
-              id: line.id,
-              points: googleRoutesMap['${line.id}|${line.directions.first.id}']
-                      ?.polylinePoints ??
-                  line.directions.first.roadPolyline ??
-                  line.directions.first.polyline,
-              color: line.color,
-              strokeWidth: activeBusLineIds.contains(line.id) ? 4.5 : 3.2,
-            ),
+          if (!_accessibleOnly || line.isWheelchairAccessible)
+            if (line.directions.isNotEmpty &&
+                (googleRoutesMap.containsKey('${line.id}|${line.directions.first.id}') ||
+                    activeBusLineIds.contains(line.id)))
+              GoogleMap3DPolylineData(
+                id: line.id,
+                points: googleRoutesMap['${line.id}|${line.directions.first.id}']
+                        ?.polylinePoints ??
+                    line.directions.first.roadPolyline ??
+                    line.directions.first.polyline,
+                color: line.color,
+                strokeWidth: activeBusLineIds.contains(line.id) ? 4.5 : 3.2,
+              ),
     ];
 
     final googleStops = <BusStop>[
@@ -710,6 +576,8 @@ class _MapScreenState extends ConsumerState<MapScreen> {
           label:
               '${bus.lineCode} • ${bus.passengerCount}/${bus.vehicleCapacity} potnikov (${bus.loadPercent}%) → ${bus.nextStopName}',
           isBus: true,
+          isWheelchairAccessible: bus.isWheelchairAccessible,
+          headingDegrees: bus.headingDegrees,
           color: linesMap[bus.lineId]?.color ?? scheme.secondary,
         ),
       for (final stop in googleStops)
@@ -718,6 +586,7 @@ class _MapScreenState extends ConsumerState<MapScreen> {
           position: stop.position,
           label: stop.name,
           isBus: false,
+          isWheelchairAccessible: stop.isStepFree,
           color: highlightedLine?.color ?? scheme.primary,
         ),
     ];
@@ -727,7 +596,6 @@ class _MapScreenState extends ConsumerState<MapScreen> {
 
     return GoogleMap3DWidget(
       initialCenter: location.effectivePosition,
-      mapController: _mapController,
       initialUse3D: false,
       showPresets: false,
       showStatusPill: false,
@@ -737,16 +605,11 @@ class _MapScreenState extends ConsumerState<MapScreen> {
           : '',
       polylines3D: polylines3D,
       markers3D: markers3D,
-      polylines2D: polylines,
-      markers2D: markers,
       activeBusCount: activeBuses.isNotEmpty ? activeBuses.length : null,
       totalPassengers: activeBuses.isNotEmpty ? totalPassengers : null,
       recenterLabel:
           location.isGps ? l10n.mapCenterOnMe : l10n.mapManualCenter,
-      onRecenter2D: () {
-        ref.invalidate(userLocationProvider);
-        _safeMoveMap(location.effectivePosition, 14.5);
-      },
+      onRecenter2D: () => ref.invalidate(userLocationProvider),
       onFullScreenToggle: () => openFullScreenTransitMap(
         context,
         initialLineId: _highlightedLineId,
@@ -775,7 +638,7 @@ class _MapScreenState extends ConsumerState<MapScreen> {
           ManualLocationFallbackCard(
             stops: allStops,
             selectedStop: location.manualStop,
-            onManualStopChanged: (stop) => _safeMoveMap(stop.position, 14.5),
+            onManualStopChanged: (stop) => setState(() {}),
           ),
           const SizedBox(height: 12),
         ],

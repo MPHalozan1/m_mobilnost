@@ -56,6 +56,12 @@ abstract class AuthRepository {
   /// Sends a password reset request for [email].
   Future<void> resetPassword(String email);
 
+  /// Sends a Firebase verification email to the active email-based account.
+  Future<void> sendEmailVerification();
+
+  /// Refreshes the active user session (e.g. after clicking the email link).
+  Future<UserProfile?> reloadCurrentUser();
+
   /// Updates persisted rider profile fields.
   Future<UserProfile> updateProfile(UserProfile updated);
 

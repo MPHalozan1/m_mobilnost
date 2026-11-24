@@ -701,7 +701,7 @@
   "accountEmailLabel": "E-poštni naslov",
   "accountPasswordLabel": "Geslo",
   "accountDobLabel": "Datum rojstva",
-  "accountDemoAccountHint": "Demo uporabnik: demo@marprom.test / demo1234",
+  "accountDemoAccountHint": "Demo uporabnik: demo@marprom.si / demo1234",
   "accountYouthEligible": "Upravičeni do mladinske / študentske cene",
   "accountSeniorEligible": "Upravičeni do upokojenske cene",
   "accountResetSent": "Testna povezava za ponastavitev gesla pripravljena za {email}.",

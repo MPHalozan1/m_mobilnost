@@ -1,4 +1,6 @@
-// Official Marprom Maribor urban bus lines (G1-G6 main & P7-P19 connector) matching vozniredi.marprom.si.
+//**********************************************
+// Official 19 Marprom Maribor bus lines       *
+//**********************************************
 
 import 'package:flutter/material.dart';
 import 'package:latlong2/latlong.dart';
@@ -6,7 +8,8 @@ import 'package:latlong2/latlong.dart';
 import '../models/bus_line.dart';
 import 'seed_stops.dart';
 
-/// Builds a two-direction [BusLine] whose route polylines derive from [seedStops].
+/// Builds a two-direction [BusLine] storing only stop waypoints.
+/// Road-following street geometry is fetched dynamically via Google Routes API v2.
 BusLine _buildLine({
   required String id,
   required String code,
@@ -15,7 +18,13 @@ BusLine _buildLine({
   required String outboundName,
   required String inboundName,
   required List<String> outboundStopIds,
-  bool isLowFloorDefault = true,
+  MarpromVehicleClass defaultVehicleClass = MarpromVehicleClass.solo12m,
+  int? maxCapacity,
+  bool isLowFloor = true,
+  bool hasWheelchairRamp = true,
+  bool hasWheelchairSpace = true,
+  bool hasAudioAnnouncements = true,
+  bool isElectricDefault = false,
 }) {
   final inboundStopIds = outboundStopIds.reversed.toList(growable: false);
   return BusLine(
@@ -23,7 +32,13 @@ BusLine _buildLine({
     code: code,
     name: name,
     color: color,
-    isLowFloorDefault: isLowFloorDefault,
+    defaultVehicleClass: defaultVehicleClass,
+    maxCapacity: maxCapacity,
+    isLowFloor: isLowFloor,
+    hasWheelchairRamp: hasWheelchairRamp,
+    hasWheelchairSpace: hasWheelchairSpace,
+    hasAudioAnnouncements: hasAudioAnnouncements,
+    isElectricDefault: isElectricDefault,
     directions: [
       LineDirection(
         id: '${id}_out',
@@ -31,7 +46,6 @@ BusLine _buildLine({
         terminalStopId: outboundStopIds.last,
         stopIds: outboundStopIds,
         polyline: _polylineFromStops(outboundStopIds),
-        roadPolyline: _roadPolylineFromStops(outboundStopIds),
       ),
       LineDirection(
         id: '${id}_in',
@@ -39,7 +53,6 @@ BusLine _buildLine({
         terminalStopId: inboundStopIds.last,
         stopIds: inboundStopIds,
         polyline: _polylineFromStops(inboundStopIds),
-        roadPolyline: _roadPolylineFromStops(inboundStopIds),
       ),
     ],
   );
@@ -51,26 +64,9 @@ List<LatLng> _polylineFromStops(List<String> stopIds) {
   ];
 }
 
-List<LatLng> _roadPolylineFromStops(List<String> stopIds) {
-  final stops = _polylineFromStops(stopIds);
-  if (stops.length < 2) return stops;
-  final road = <LatLng>[];
-  for (var i = 0; i < stops.length - 1; i++) {
-    final from = stops[i];
-    final to = stops[i + 1];
-    if (i == 0) road.add(from);
-    for (var step = 1; step <= 8; step++) {
-      final t = step / 8;
-      road.add(
-        LatLng(
-          from.latitude + (to.latitude - from.latitude) * t,
-          from.longitude + (to.longitude - from.longitude) * t,
-        ),
-      );
-    }
-  }
-  return road;
-}
+//**********************************************
+// Marprom network G1-G6 & P7-P19              *
+//**********************************************
 
 /// All 19 official Marprom Maribor bus lines: main trunk lines G1-G6 and connector lines P7-P19.
 final List<BusLine> seedLines = [
@@ -81,6 +77,9 @@ final List<BusLine> seedLines = [
     color: const Color(0xFFC8102E),
     outboundName: 'AP Maribor – Tezenska Dobrava',
     inboundName: 'Tezenska Dobrava – AP Maribor',
+    defaultVehicleClass: MarpromVehicleClass.articulated18m,
+    maxCapacity: 120,
+    isElectricDefault: true,
     outboundStopIds: const [
       'glavna_postaja',
       'city_center',
@@ -101,6 +100,9 @@ final List<BusLine> seedLines = [
     color: const Color(0xFF0B6E4F),
     outboundName: 'AP Maribor – Nova vas',
     inboundName: 'Nova vas – AP Maribor',
+    defaultVehicleClass: MarpromVehicleClass.solo12m,
+    maxCapacity: 92,
+    isElectricDefault: true,
     outboundStopIds: const [
       'glavna_postaja',
       'city_center',
@@ -120,6 +122,8 @@ final List<BusLine> seedLines = [
     color: const Color(0xFF0057B8),
     outboundName: 'Tabor – Tezno – Pobrežje – Center – Studenci – Betnava',
     inboundName: 'Betnava – Studenci – Center – Pobrežje – Tezno – Tabor',
+    defaultVehicleClass: MarpromVehicleClass.articulated18m,
+    maxCapacity: 120,
     outboundStopIds: const [
       'tabor',
       'tezno_dom',
@@ -146,6 +150,8 @@ final List<BusLine> seedLines = [
     color: const Color(0xFFD97706),
     outboundName: 'AP Maribor – Studenci – Limbuš',
     inboundName: 'Limbuš – Studenci – AP Maribor',
+    defaultVehicleClass: MarpromVehicleClass.solo12m,
+    maxCapacity: 90,
     outboundStopIds: const [
       'glavna_postaja',
       'city_center',
@@ -166,6 +172,9 @@ final List<BusLine> seedLines = [
     color: const Color(0xFF6D28D9),
     outboundName: 'Europark – Rotovž – Univerzitetni kampus – Kamnica',
     inboundName: 'Kamnica – Univerzitetni kampus – Rotovž – Europark',
+    defaultVehicleClass: MarpromVehicleClass.solo12m,
+    maxCapacity: 85,
+    isElectricDefault: true,
     outboundStopIds: const [
       'europark',
       'ukc_maribor',
@@ -186,6 +195,9 @@ final List<BusLine> seedLines = [
     color: const Color(0xFF15803D),
     outboundName: 'AP Maribor – UKC – Vzpenjača',
     inboundName: 'Vzpenjača – UKC – AP Maribor',
+    defaultVehicleClass: MarpromVehicleClass.articulated18m,
+    maxCapacity: 120,
+    isElectricDefault: true,
     outboundStopIds: const [
       'glavna_postaja',
       'city_center',
@@ -205,6 +217,9 @@ final List<BusLine> seedLines = [
     color: const Color(0xFF0369A1),
     outboundName: 'AP Maribor – Kamnica – Morski jarek',
     inboundName: 'Morski jarek – Kamnica – AP Maribor',
+    defaultVehicleClass: MarpromVehicleClass.midibus9m,
+    maxCapacity: 64,
+    isElectricDefault: true,
     outboundStopIds: const [
       'glavna_postaja',
       'city_center',
@@ -225,6 +240,8 @@ final List<BusLine> seedLines = [
     color: const Color(0xFF0E7490),
     outboundName: 'AP Maribor – Limbuš – Pekre',
     inboundName: 'Pekre – Limbuš – AP Maribor',
+    defaultVehicleClass: MarpromVehicleClass.solo12m,
+    maxCapacity: 88,
     outboundStopIds: const [
       'glavna_postaja',
       'city_center',
@@ -243,6 +260,8 @@ final List<BusLine> seedLines = [
     color: const Color(0xFFB45309),
     outboundName: 'AP Maribor – Zrkovci – Dogoše',
     inboundName: 'Dogoše – Zrkovci – AP Maribor',
+    defaultVehicleClass: MarpromVehicleClass.solo12m,
+    maxCapacity: 88,
     outboundStopIds: const [
       'glavna_postaja',
       'city_center',
@@ -262,6 +281,12 @@ final List<BusLine> seedLines = [
     color: const Color(0xFF7C2D12),
     outboundName: 'AP Maribor – Malečnik – Trčova – Grušova',
     inboundName: 'Grušova – Trčova – Malečnik – AP Maribor',
+    defaultVehicleClass: MarpromVehicleClass.solo12m,
+    maxCapacity: 85,
+    isLowFloor: true,
+    hasWheelchairRamp: false,
+    hasWheelchairSpace: false,
+    hasAudioAnnouncements: true,
     outboundStopIds: const [
       'glavna_postaja',
       'city_center',
@@ -282,6 +307,8 @@ final List<BusLine> seedLines = [
     color: const Color(0xFF4338CA),
     outboundName: 'AP Maribor – Razvanje – Botanični vrt',
     inboundName: 'Botanični vrt – Razvanje – AP Maribor',
+    defaultVehicleClass: MarpromVehicleClass.solo12m,
+    maxCapacity: 90,
     outboundStopIds: const [
       'glavna_postaja',
       'city_center',
@@ -301,6 +328,8 @@ final List<BusLine> seedLines = [
     color: const Color(0xFFBE185D),
     outboundName: 'AP Maribor – Dobrava – Supernova',
     inboundName: 'Supernova – Dobrava – AP Maribor',
+    defaultVehicleClass: MarpromVehicleClass.solo12m,
+    maxCapacity: 90,
     outboundStopIds: const [
       'glavna_postaja',
       'city_center',
@@ -324,6 +353,8 @@ final List<BusLine> seedLines = [
     color: const Color(0xFF1D4ED8),
     outboundName: 'AP Maribor – Stražun – Poštni center',
     inboundName: 'Poštni center – Stražun – AP Maribor',
+    defaultVehicleClass: MarpromVehicleClass.solo12m,
+    maxCapacity: 88,
     outboundStopIds: const [
       'glavna_postaja',
       'city_center',
@@ -343,6 +374,8 @@ final List<BusLine> seedLines = [
     color: const Color(0xFF9333EA),
     outboundName: 'Limbuš – Nova vas – E.Leclerc – TC Merkur',
     inboundName: 'TC Merkur – E.Leclerc – Nova vas – Limbuš',
+    defaultVehicleClass: MarpromVehicleClass.solo12m,
+    maxCapacity: 88,
     outboundStopIds: const [
       'limbus',
       'pekre',
@@ -362,6 +395,8 @@ final List<BusLine> seedLines = [
     color: const Color(0xFF0F766E),
     outboundName: 'Košaški dol – AP Maribor – Bresternica',
     inboundName: 'Bresternica – AP Maribor – Košaški dol',
+    defaultVehicleClass: MarpromVehicleClass.solo12m,
+    maxCapacity: 90,
     outboundStopIds: const [
       'kosaki',
       'piramida',
@@ -381,6 +416,12 @@ final List<BusLine> seedLines = [
     color: const Color(0xFFC2410C),
     outboundName: 'AP Maribor – Brezje – Dogoše – Zg. Duplek',
     inboundName: 'Zg. Duplek – Dogoše – Brezje – AP Maribor',
+    defaultVehicleClass: MarpromVehicleClass.solo12m,
+    maxCapacity: 85,
+    isLowFloor: false,
+    hasWheelchairRamp: false,
+    hasWheelchairSpace: false,
+    hasAudioAnnouncements: true,
     outboundStopIds: const [
       'glavna_postaja',
       'city_center',
@@ -400,6 +441,9 @@ final List<BusLine> seedLines = [
     color: const Color(0xFFA21CAF),
     outboundName: 'Šentiljska Hofer – E.Leclerc',
     inboundName: 'E.Leclerc – Šentiljska Hofer',
+    defaultVehicleClass: MarpromVehicleClass.midibus9m,
+    maxCapacity: 64,
+    isElectricDefault: true,
     outboundStopIds: const [
       'sentiljska_hofer',
       'kosaki',
@@ -419,7 +463,12 @@ final List<BusLine> seedLines = [
     color: const Color(0xFF047857),
     outboundName: 'Turnerjeva – UKC – Pekre',
     inboundName: 'Pekre – UKC – Turnerjeva',
-    isLowFloorDefault: false,
+    defaultVehicleClass: MarpromVehicleClass.solo12m,
+    maxCapacity: 85,
+    isLowFloor: false,
+    hasWheelchairRamp: false,
+    hasWheelchairSpace: false,
+    hasAudioAnnouncements: false,
     outboundStopIds: const [
       'turnerjeva',
       'univerza',
@@ -440,6 +489,9 @@ final List<BusLine> seedLines = [
     color: const Color(0xFF3730A3),
     outboundName: 'AP Maribor – Dom pod Gorco – Supernova',
     inboundName: 'Supernova – Dom pod Gorco – AP Maribor',
+    defaultVehicleClass: MarpromVehicleClass.midibus9m,
+    maxCapacity: 64,
+    isElectricDefault: true,
     outboundStopIds: const [
       'glavna_postaja',
       'city_center',

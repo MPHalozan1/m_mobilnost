@@ -421,7 +421,7 @@
   "accountEmailLabel": "E-Mail-Adresse",
   "accountPasswordLabel": "Passwort",
   "accountDobLabel": "Geburtsdatum",
-  "accountDemoAccountHint": "Demo-Konto: demo@marprom.test / demo1234",
+  "accountDemoAccountHint": "Demo-Konto: demo@marprom.si / demo1234",
   "accountYouthEligible": "Berechtigt für Jugend- / Studierendentarif",
   "accountSeniorEligible": "Berechtigt für Seniorentarif",
   "accountResetSent": "Test-Link zum Zurücksetzen des Passworts für {email} vorbereitet.",

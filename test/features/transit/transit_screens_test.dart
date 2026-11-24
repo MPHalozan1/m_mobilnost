@@ -1,9 +1,6 @@
 // Widget tests covering Lines, LineDetail, StopDetail, Map, and LiveTracker screens.
 
-import 'dart:typed_data';
-
 import 'package:flutter/material.dart';
-import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
@@ -11,8 +8,8 @@ import 'package:latlong2/latlong.dart';
 import 'package:m_mobilnost/app/app.dart';
 import 'package:m_mobilnost/core/accessibility/a11y_settings.dart';
 import 'package:m_mobilnost/core/accessibility/favorites_provider.dart';
+import 'package:m_mobilnost/core/maps/google_map_3d_widget.dart';
 import 'package:m_mobilnost/core/network/connectivity_provider.dart';
-import 'package:m_mobilnost/core/network/map_tile_provider.dart';
 import 'package:m_mobilnost/core/widgets/occupancy_strip.dart';
 import 'package:m_mobilnost/core/widgets/simulated_data_badge.dart';
 import 'package:m_mobilnost/data/models/bus_position.dart';
@@ -25,27 +22,6 @@ import 'package:m_mobilnost/features/map/presentation/map_screen.dart';
 import 'package:m_mobilnost/features/timetable/presentation/stop_detail_screen.dart';
 import 'package:m_mobilnost/l10n/app_localizations.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-
-final Uint8List _transparent1x1Png = Uint8List.fromList(<int>[
-  0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, //
-  0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
-  0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
-  0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,
-  0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41,
-  0x54, 0x78, 0x9C, 0x63, 0x00, 0x01, 0x00, 0x00,
-  0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00,
-  0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE,
-  0x42, 0x60, 0x82,
-]);
-
-class _MemoryTestTileProvider extends TileProvider {
-  _MemoryTestTileProvider();
-
-  @override
-  ImageProvider getImage(TileCoordinates coordinates, TileLayer options) {
-    return MemoryImage(_transparent1x1Png);
-  }
-}
 
 Future<ProviderContainer> _createTestContainer({
   bool useSimulatedLive = true,
@@ -61,7 +37,6 @@ Future<ProviderContainer> _createTestContainer({
     overrides: [
       sharedPreferencesProvider.overrideWithValue(prefs),
       isOfflineProvider.overrideWithValue(false),
-      mapTileProviderProvider.overrideWithValue(_MemoryTestTileProvider()),
       locationServiceProvider.overrideWithValue(
         LocationService(gpsProbe: gpsProbe ?? () async => null),
       ),
@@ -201,7 +176,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Line G6'), findsWidgets);
-    expect(find.byType(FlutterMap), findsOneWidget);
+    expect(find.byType(GoogleMap3DWidget), findsOneWidget);
     expect(find.byType(OccupancyStrip), findsWidgets);
     expect(find.byType(SimulatedDataBadge), findsOneWidget);
     expect(
@@ -217,7 +192,7 @@ void main() {
     // Toggle map to list view.
     await tester.tap(find.text('List'));
     await tester.pumpAndSettle();
-    expect(find.byType(FlutterMap), findsNothing);
+    expect(find.byType(GoogleMap3DWidget), findsNothing);
 
     // Tap Follow a bus live navigates to /tracker?lineId=6.
     await tester.ensureVisible(find.text('Follow a bus live'));
@@ -324,7 +299,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Location access unavailable'), findsOneWidget);
-    expect(find.byType(FlutterMap), findsOneWidget);
+    expect(find.byType(GoogleMap3DWidget), findsOneWidget);
     expect(find.text('Glavni trg'), findsWidgets);
 
     // Select a different manual Maribor stop cleanly without blocking usage.
@@ -349,10 +324,10 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Showing route for line G6'), findsOneWidget);
 
-    // Toggle to full List view (hides FlutterMap).
+    // Toggle to full List view (hides GoogleMap3DWidget).
     await tester.tap(find.text('List'));
     await tester.pumpAndSettle();
-    expect(find.byType(FlutterMap), findsNothing);
+    expect(find.byType(GoogleMap3DWidget), findsNothing);
 
     // Scroll to a stop and tap to open modal bottom sheet with next departures.
     await tester.dragUntilVisible(

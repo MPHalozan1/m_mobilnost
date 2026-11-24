@@ -1,8 +1,12 @@
-// Persists and exposes accessibility, theme, locale, and simulation settings via Riverpod.
+//**********************************************
+// Persisted A11y, Theme & Transit Preferences *
+//**********************************************
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+import '../maps/google_map_models.dart';
 
 /// Supported appearance modes including WCAG AAA high contrast.
 enum AppThemeChoice {
@@ -12,7 +16,7 @@ enum AppThemeChoice {
   /// Always use the light WCAG AA theme.
   light,
 
-  /// Always use the dark WCAG AA theme.
+  /// Always use the dark WCAG AA theme (default).
   dark,
 
   /// Always use the black/white/yellow WCAG AAA high-contrast theme.
@@ -24,7 +28,7 @@ enum AppThemeChoice {
 class A11ySettings {
   /// Creates an [A11ySettings] configuration snapshot.
   const A11ySettings({
-    this.themeMode = AppThemeChoice.system,
+    this.themeMode = AppThemeChoice.dark,
     this.localeCode = 'sl',
     this.extraLargeText = false,
     this.reducedMotion = false,
@@ -40,9 +44,11 @@ class A11ySettings {
     this.notificationsConsent = false,
     this.locationManualMode = false,
     this.onboardingDone = false,
+    this.wheelchairAccessibleOnly = false,
+    this.mapStylePreset = GoogleMapStylePreset.dark,
   });
 
-  /// Active theme preference (system, light, dark, or highContrast).
+  /// Active theme preference (dark by default, light, system, or highContrast).
   final AppThemeChoice themeMode;
 
   /// Active language code: 'sl', 'en', 'de', or 'sr_Latn'.
@@ -87,8 +93,14 @@ class A11ySettings {
   /// Uses a manually selected Maribor stop instead of GPS.
   final bool locationManualMode;
 
-  /// Whether the first-run onboarding flow has been completed.
+  /// Whether the first-run welcome/onboarding flow has been completed.
   final bool onboardingDone;
+
+  /// Global wheelchair/mobility-accessible-only filter across maps, schedules, and planner.
+  final bool wheelchairAccessibleOnly;
+
+  /// Preferred Google Maps visual style (`dark`, `light`, `satellite`).
+  final GoogleMapStylePreset mapStylePreset;
 
   /// Whether high-contrast WCAG AAA mode is active.
   bool get isHighContrast => themeMode == AppThemeChoice.highContrast;
@@ -135,6 +147,8 @@ class A11ySettings {
     bool? notificationsConsent,
     bool? locationManualMode,
     bool? onboardingDone,
+    bool? wheelchairAccessibleOnly,
+    GoogleMapStylePreset? mapStylePreset,
   }) {
     return A11ySettings(
       themeMode: themeMode ?? this.themeMode,
@@ -153,6 +167,9 @@ class A11ySettings {
       notificationsConsent: notificationsConsent ?? this.notificationsConsent,
       locationManualMode: locationManualMode ?? this.locationManualMode,
       onboardingDone: onboardingDone ?? this.onboardingDone,
+      wheelchairAccessibleOnly:
+          wheelchairAccessibleOnly ?? this.wheelchairAccessibleOnly,
+      mapStylePreset: mapStylePreset ?? this.mapStylePreset,
     );
   }
 
@@ -175,7 +192,9 @@ class A11ySettings {
         other.analyticsConsent == analyticsConsent &&
         other.notificationsConsent == notificationsConsent &&
         other.locationManualMode == locationManualMode &&
-        other.onboardingDone == onboardingDone;
+        other.onboardingDone == onboardingDone &&
+        other.wheelchairAccessibleOnly == wheelchairAccessibleOnly &&
+        other.mapStylePreset == mapStylePreset;
   }
 
   @override
@@ -196,6 +215,8 @@ class A11ySettings {
         notificationsConsent,
         locationManualMode,
         onboardingDone,
+        wheelchairAccessibleOnly,
+        mapStylePreset,
       );
 }
 
@@ -232,13 +253,22 @@ class A11ySettingsNotifier extends StateNotifier<A11ySettings> {
   static const _kNotificationsConsent = 'a11y_notifications_consent';
   static const _kLocationManual = 'a11y_location_manual';
   static const _kOnboardingDone = 'a11y_onboarding_done';
+  static const _kWheelchairOnly = 'a11y_wheelchair_only';
+  static const _kMapStyle = 'a11y_map_style';
 
   static A11ySettings _loadInitial(SharedPreferences? prefs) {
     if (prefs == null) return const A11ySettings();
     final themeName = prefs.getString(_kThemeMode);
     final theme = AppThemeChoice.values.firstWhere(
       (e) => e.name == themeName,
-      orElse: () => AppThemeChoice.system,
+      orElse: () => AppThemeChoice.dark,
+    );
+    final mapStyleName = prefs.getString(_kMapStyle);
+    final mapStyle = GoogleMapStylePreset.values.firstWhere(
+      (e) => e.name == mapStyleName,
+      orElse: () => theme == AppThemeChoice.light
+          ? GoogleMapStylePreset.light
+          : GoogleMapStylePreset.dark,
     );
     return A11ySettings(
       themeMode: theme,
@@ -257,13 +287,33 @@ class A11ySettingsNotifier extends StateNotifier<A11ySettings> {
       notificationsConsent: prefs.getBool(_kNotificationsConsent) ?? false,
       locationManualMode: prefs.getBool(_kLocationManual) ?? false,
       onboardingDone: prefs.getBool(_kOnboardingDone) ?? false,
+      wheelchairAccessibleOnly: prefs.getBool(_kWheelchairOnly) ?? false,
+      mapStylePreset: mapStyle,
     );
   }
 
-  /// Updates and persists [themeMode].
+  /// Updates and persists [themeMode] (and syncs default map style unless satellite).
   Future<void> setThemeMode(AppThemeChoice value) async {
-    state = state.copyWith(themeMode: value);
+    final syncedMapStyle = state.mapStylePreset == GoogleMapStylePreset.satellite
+        ? GoogleMapStylePreset.satellite
+        : (value == AppThemeChoice.light
+            ? GoogleMapStylePreset.light
+            : GoogleMapStylePreset.dark);
+    state = state.copyWith(themeMode: value, mapStylePreset: syncedMapStyle);
     await _prefs?.setString(_kThemeMode, value.name);
+    await _prefs?.setString(_kMapStyle, syncedMapStyle.name);
+  }
+
+  /// Updates and persists [mapStylePreset].
+  Future<void> setMapStylePreset(GoogleMapStylePreset value) async {
+    state = state.copyWith(mapStylePreset: value);
+    await _prefs?.setString(_kMapStyle, value.name);
+  }
+
+  /// Updates and persists [wheelchairAccessibleOnly].
+  Future<void> setWheelchairAccessibleOnly(bool value) async {
+    state = state.copyWith(wheelchairAccessibleOnly: value);
+    await _prefs?.setBool(_kWheelchairOnly, value);
   }
 
   /// Updates and persists [localeCode] ('sl', 'en', 'de', or 'sr_Latn').

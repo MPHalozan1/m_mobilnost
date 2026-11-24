@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "500961598933",
+    "project_id": "m-mobilnost-2",
+    "storage_bucket": "m-mobilnost-2.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:500961598933:android:5ed776e20ed8866820315c",
+        "android_client_info": {
+          "package_name": "si.marprom.m_mobilnost"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAJNG4TFmCAskZhgjMwQEeK2dnolsANH7g"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

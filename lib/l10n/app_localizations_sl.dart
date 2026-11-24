@@ -1398,7 +1398,7 @@ class AppLocalizationsSl extends AppLocalizations {
 
   @override
   String get accountDemoAccountHint =>
-      'Demo uporabnik: demo@marprom.test / demo1234';
+      'Demo uporabnik: demo@marprom.si / demo1234';
 
   @override
   String get accountYouthEligible =>

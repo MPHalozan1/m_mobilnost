@@ -17,6 +17,7 @@ import '../../../core/theme/colors.dart';
 import '../../../core/utils/distance.dart';
 import '../../../core/utils/time_format.dart';
 import '../../../core/widgets/big_button.dart';
+import '../../../core/widgets/bus_occupancy_cutaway.dart';
 import '../../../core/widgets/motion.dart';
 import '../../../core/widgets/occupancy_strip.dart';
 import '../../../core/widgets/simulated_data_badge.dart';
@@ -713,27 +714,13 @@ class _NextBusSummaryCard extends ConsumerWidget {
             style: theme.textTheme.bodyLarge,
           ),
           const SizedBox(height: 14),
-          OccupancyStrip(level: dep.occupancy),
-          if (matchingLiveBus != null) ...[
-            const SizedBox(height: 10),
-            Row(
-              children: [
-                Icon(
-                  Icons.directions_bus_filled_rounded,
-                  size: 16,
-                  color: scheme.onSurfaceVariant,
-                ),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: Text(
-                    '${matchingLiveBus.vehicleId} (${matchingLiveBus.vehicleModel}) • '
-                    '${matchingLiveBus.passengerCount}/${matchingLiveBus.vehicleCapacity} potnikov (${matchingLiveBus.loadPercent}%)',
-                    style: theme.textTheme.bodySmall,
-                  ),
-                ),
-              ],
-            ),
-          ],
+          if (matchingLiveBus != null)
+            BusOccupancyCutaway.fromBusPosition(
+              matchingLiveBus,
+              compact: true,
+            )
+          else
+            OccupancyStrip(level: dep.occupancy),
           const SizedBox(height: 12),
           if (!settings.useSimulatedLive) ...[
             Text(

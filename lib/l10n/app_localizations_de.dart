@@ -1393,8 +1393,7 @@ class AppLocalizationsDe extends AppLocalizations {
   String get accountDobLabel => 'Geburtsdatum';
 
   @override
-  String get accountDemoAccountHint =>
-      'Demo-Konto: demo@marprom.test / demo1234';
+  String get accountDemoAccountHint => 'Demo-Konto: demo@marprom.si / demo1234';
 
   @override
   String get accountYouthEligible =>

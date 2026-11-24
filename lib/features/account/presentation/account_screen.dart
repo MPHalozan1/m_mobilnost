@@ -8,7 +8,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/accessibility/a11y_settings.dart';
 import '../../../core/accessibility/haptic_cues.dart';
 import '../../../core/accessibility/semantics_helpers.dart';
+import '../../../core/auth/email_validator.dart';
 import '../../../core/firebase/firebase_bootstrap.dart';
+import '../../../core/firebase/firestore_transit_service.dart';
 import '../../../core/layout/responsive_builder.dart';
 import '../../../core/theme/colors.dart';
 import '../../../core/widgets/big_button.dart';
@@ -575,8 +577,12 @@ class _AccountScreenState extends ConsumerState<AccountScreen> {
                   prefixIcon: const Icon(Icons.email_outlined),
                 ),
                 validator: (v) {
-                  if (v == null || !v.trim().contains('@')) {
-                    return l10n.commonErrorBody;
+                  final check = EmailValidator.validate(v ?? '');
+                  if (!check.isValid) {
+                    return check.localizedError(
+                          ref.read(a11ySettingsProvider).localeCode,
+                        ) ??
+                        l10n.commonErrorBody;
                   }
                   return null;
                 },
@@ -687,13 +693,79 @@ class _AccountScreenState extends ConsumerState<AccountScreen> {
                   labelText: l10n.accountEmailLabel,
                   prefixIcon: const Icon(Icons.email_outlined),
                 ),
+                onChanged: (_) => setState(() {}),
                 validator: (v) {
-                  if (v == null || !v.trim().contains('@')) {
-                    return l10n.commonErrorBody;
+                  final check = EmailValidator.validate(v ?? '');
+                  if (!check.isValid) {
+                    return check.localizedError(
+                          ref.read(a11ySettingsProvider).localeCode,
+                        ) ??
+                        l10n.commonErrorBody;
                   }
                   return null;
                 },
               ),
+              if (_signUpEmailController.text.contains('@'))
+                Builder(
+                  builder: (context) {
+                    final check = EmailValidator.validate(
+                      _signUpEmailController.text,
+                    );
+                    if (check.isValid) {
+                      return Padding(
+                        padding: const EdgeInsets.only(top: 6),
+                        child: Row(
+                          children: [
+                            const Icon(
+                              Icons.verified_user_outlined,
+                              size: 16,
+                              color: MarpromColors.mobilityGreen,
+                            ),
+                            const SizedBox(width: 6),
+                            Text(
+                              'Zaupanja vredna domena (${check.normalizedEmail.split('@').last})',
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .bodySmall
+                                  ?.copyWith(color: MarpromColors.mobilityGreen),
+                            ),
+                          ],
+                        ),
+                      );
+                    }
+                    return Padding(
+                      padding: const EdgeInsets.only(top: 6),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            check.localizedError(
+                                  ref.read(a11ySettingsProvider).localeCode,
+                                ) ??
+                                '',
+                            style: Theme.of(context)
+                                .textTheme
+                                .bodySmall
+                                ?.copyWith(
+                                  color: Theme.of(context).colorScheme.error,
+                                ),
+                          ),
+                          if (check.suggestedEmail != null) ...[
+                            const SizedBox(height: 4),
+                            ActionChip(
+                              avatar: const Icon(Icons.auto_fix_high_rounded, size: 16),
+                              label: Text('Popravi v ${check.suggestedEmail}'),
+                              onPressed: () {
+                                _signUpEmailController.text = check.suggestedEmail!;
+                                setState(() {});
+                              },
+                            ),
+                          ],
+                        ],
+                      ),
+                    );
+                  },
+                ),
               const SizedBox(height: 12),
               TextFormField(
                 controller: _signUpPasswordController,
@@ -717,13 +789,62 @@ class _AccountScreenState extends ConsumerState<AccountScreen> {
                     },
                   ),
                 ),
+                onChanged: (_) => setState(() {}),
                 validator: (v) {
-                  if (v == null || v.length < 4) {
-                    return l10n.commonErrorBody;
+                  if (v == null || v.length < 6) {
+                    return 'Geslo naj ima vsaj 6 znakov.';
                   }
                   return null;
                 },
               ),
+              if (_signUpPasswordController.text.isNotEmpty)
+                Builder(
+                  builder: (context) {
+                    final strength = EmailValidator.evaluatePasswordStrength(
+                      _signUpPasswordController.text,
+                    );
+                    final color = strength.score <= 1
+                        ? Theme.of(context).colorScheme.error
+                        : strength.score == 2
+                            ? const Color(0xFFD97706)
+                            : MarpromColors.mobilityGreen;
+                    return Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              for (var i = 1; i <= 4; i++)
+                                Expanded(
+                                  child: Container(
+                                    height: 5,
+                                    margin: EdgeInsets.only(right: i < 4 ? 4 : 0),
+                                    decoration: BoxDecoration(
+                                      color: strength.score >= i
+                                          ? color
+                                          : Theme.of(context)
+                                              .colorScheme
+                                              .surfaceContainerHighest,
+                                      borderRadius: BorderRadius.circular(999),
+                                    ),
+                                  ),
+                                ),
+                            ],
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            'Moč gesla: ${strength.labelSl}',
+                            style: Theme.of(context)
+                                .textTheme
+                                .bodySmall
+                                ?.copyWith(color: color),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
               const SizedBox(height: 14),
               BigButton(
                 icon: Icons.cake_outlined,
@@ -971,17 +1092,141 @@ class _AccountScreenState extends ConsumerState<AccountScreen> {
                 ),
               ),
               const SizedBox(height: 16),
-              BigButton(
-                icon: Icons.credit_card_rounded,
-                label: l10n.accountManagePayments,
-                variant: BigButtonVariant.secondary,
-                expanded: true,
-                onPressed: () => navigateWithFallback(
-                  context,
-                  '/account/payments',
-                  fallbackBuilder: (_) => const PaymentMethodsScreen(),
+              if (!user.emailVerified)
+                Card(
+                  color: Theme.of(context).colorScheme.errorContainer,
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Icon(
+                              Icons.mark_email_unread_rounded,
+                              color: Theme.of(context).colorScheme.onErrorContainer,
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Text(
+                                'Potrdite svoj e-poštni naslov',
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .titleMedium
+                                    ?.copyWith(
+                                      fontWeight: FontWeight.w800,
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .onErrorContainer,
+                                    ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          'Na ${user.email} smo poslali potrditveno povezavo. Polni dostop do plačil in shranjenih poti se odklene po potrditvi.',
+                          style: TextStyle(
+                            color: Theme.of(context).colorScheme.onErrorContainer,
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        Wrap(
+                          spacing: 10,
+                          runSpacing: 8,
+                          children: [
+                            FilledButton.icon(
+                              onPressed: () async {
+                                await ref
+                                    .read(authRepositoryProvider)
+                                    .sendEmailVerification();
+                                if (!context.mounted) return;
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text(
+                                      'Potrditveno sporočilo je bilo znova poslano.',
+                                    ),
+                                  ),
+                                );
+                              },
+                              icon: const Icon(Icons.send_rounded),
+                              label: const Text('Ponovno pošlji'),
+                            ),
+                            OutlinedButton.icon(
+                              onPressed: () async {
+                                await ref
+                                    .read(authRepositoryProvider)
+                                    .reloadCurrentUser();
+                              },
+                              icon: const Icon(Icons.refresh_rounded),
+                              label: const Text('Osveži status'),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
                 ),
-              ),
+              if (!user.emailVerified) const SizedBox(height: 16),
+              if (user.emailVerified)
+                BigButton(
+                  icon: Icons.credit_card_rounded,
+                  label: l10n.accountManagePayments,
+                  variant: BigButtonVariant.secondary,
+                  expanded: true,
+                  onPressed: () => navigateWithFallback(
+                    context,
+                    '/account/payments',
+                    fallbackBuilder: (_) => const PaymentMethodsScreen(),
+                  ),
+                ),
+              if (user.emailVerified) ...[
+                const SizedBox(height: 16),
+                StreamBuilder<List<SavedRouteRecord>>(
+                  stream: ref
+                      .read(firestoreTransitServiceProvider)
+                      .watchUserSavedRoutes(user.id),
+                  builder: (context, snapshot) {
+                    final saved = snapshot.data ?? const <SavedRouteRecord>[];
+                    if (saved.isEmpty) return const SizedBox.shrink();
+                    return Card(
+                      child: Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Shranjene poti (${saved.length})',
+                              style: Theme.of(context).textTheme.titleMedium,
+                            ),
+                            const SizedBox(height: 10),
+                            for (final route in saved)
+                              ListTile(
+                                contentPadding: EdgeInsets.zero,
+                                leading: const Icon(Icons.bookmark_rounded),
+                                title: Text(
+                                  route.label ??
+                                      '${route.originName} → ${route.destinationName}',
+                                ),
+                                subtitle: Text(
+                                  route.lineIds.isEmpty
+                                      ? '${route.originName} → ${route.destinationName}'
+                                      : 'Linije: ${route.lineIds.join(', ')}',
+                                ),
+                                trailing: IconButton(
+                                  icon: const Icon(Icons.delete_outline_rounded),
+                                  onPressed: () => ref
+                                      .read(firestoreTransitServiceProvider)
+                                      .deleteSavedRoute(route.id),
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ],
               const SizedBox(height: 16),
               Card(
                 child: Padding(

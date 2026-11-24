@@ -1,9 +1,6 @@
 // Accessibility audit widget tests pumping all 18 screens at 200% text scale and High Contrast AAA theme on a 390x844 phone viewport.
 
-import 'dart:typed_data';
-
 import 'package:flutter/material.dart';
-import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
@@ -11,7 +8,6 @@ import 'package:latlong2/latlong.dart';
 import 'package:m_mobilnost/app/app.dart';
 import 'package:m_mobilnost/core/accessibility/a11y_settings.dart';
 import 'package:m_mobilnost/core/network/connectivity_provider.dart';
-import 'package:m_mobilnost/core/network/map_tile_provider.dart';
 import 'package:m_mobilnost/core/theme/high_contrast_theme.dart';
 import 'package:m_mobilnost/core/widgets/occupancy_strip.dart';
 import 'package:m_mobilnost/data/mock/mock_auth_repository.dart';
@@ -44,25 +40,6 @@ import 'package:m_mobilnost/features/trip_planner/domain/route_planner.dart';
 import 'package:m_mobilnost/features/trip_planner/presentation/trip_planner_screen.dart';
 import 'package:m_mobilnost/l10n/app_localizations.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-
-final Uint8List _transparent1x1Png = Uint8List.fromList(<int>[
-  0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
-  0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
-  0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
-  0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,
-  0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41,
-  0x54, 0x78, 0x9C, 0x63, 0x00, 0x01, 0x00, 0x00,
-  0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00,
-  0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE,
-  0x42, 0x60, 0x82,
-]);
-
-class _MemoryTileProvider extends TileProvider {
-  @override
-  ImageProvider getImage(TileCoordinates coordinates, TileLayer options) {
-    return MemoryImage(_transparent1x1Png);
-  }
-}
 
 Future<ProviderContainer> _buildHighContrast200Container({
   bool signInDemoUser = false,
@@ -104,7 +81,6 @@ Future<ProviderContainer> _buildHighContrast200Container({
     overrides: [
       sharedPreferencesProvider.overrideWithValue(prefs),
       isOfflineProvider.overrideWithValue(false),
-      mapTileProviderProvider.overrideWithValue(_MemoryTileProvider()),
       ticketRepositoryProvider.overrideWithValue(ticketRepo),
       noticeRepositoryProvider.overrideWithValue(noticeRepo),
       locationServiceProvider.overrideWithValue(

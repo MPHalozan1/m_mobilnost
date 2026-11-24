@@ -1,9 +1,23 @@
-// Shared data models for 3D Google Maps markers, polylines, and Maribor camera presets.
+//**********************************************
+// Shared Google Maps markers, lines & presets *
+//**********************************************
 
 import 'package:flutter/material.dart';
 import 'package:latlong2/latlong.dart';
 
-/// Marker descriptor passed to both Web `<gmp-map-3d>` and Mobile 3D `GoogleMap`.
+/// Supported Google Maps visual styles selectable in user preferences.
+enum GoogleMapStylePreset {
+  /// Sleek dark vector/styled map (default).
+  dark,
+
+  /// Clean light road map.
+  light,
+
+  /// Hybrid satellite + road labels.
+  satellite,
+}
+
+/// Marker descriptor passed to Google Maps (Web Vector JS & Android SDK).
 @immutable
 class GoogleMap3DMarkerData {
   /// Creates a [GoogleMap3DMarkerData].
@@ -13,6 +27,8 @@ class GoogleMap3DMarkerData {
     required this.label,
     this.shortLabel,
     this.isBus = false,
+    this.isWheelchairAccessible = true,
+    this.headingDegrees = 0.0,
     this.color = const Color(0xFFC8102E),
   });
 
@@ -22,20 +38,26 @@ class GoogleMap3DMarkerData {
   /// Geographic coordinate in Maribor.
   final LatLng position;
 
-  /// Accessible tooltip/title displayed on the 3D pin.
+  /// Accessible tooltip/title displayed on the pin.
   final String label;
 
   /// Optional compact line code rendered inside bus pills (e.g. `G1`, `P12`).
   final String? shortLabel;
 
-  /// True for live buses; false for stops or landmarks.
+  /// True for live buses; false for stops or transfer landmarks.
   final bool isBus;
 
-  /// Accent color for mobile markers and badges.
+  /// True when the bus or stop is wheelchair accessible.
+  final bool isWheelchairAccessible;
+
+  /// Compass heading in degrees (`0..360`) for directional indicators.
+  final double headingDegrees;
+
+  /// Accent color for markers and badges.
   final Color color;
 }
 
-/// Polyline descriptor rendered over Maribor roads in 3D/2D maps.
+/// Polyline descriptor rendered over Maribor streets in 2D and 3D modes.
 @immutable
 class GoogleMap3DPolylineData {
   /// Creates a [GoogleMap3DPolylineData].
@@ -44,6 +66,7 @@ class GoogleMap3DPolylineData {
     required this.points,
     required this.color,
     this.strokeWidth = 6.0,
+    this.isDashed = false,
   });
 
   /// Unique line/route ID.
@@ -52,11 +75,14 @@ class GoogleMap3DPolylineData {
   /// Ordered geographic coordinates along the route.
   final List<LatLng> points;
 
-  /// Stroke color matching the Marprom line badge.
+  /// Stroke color matching the Marprom line badge or walking accent.
   final Color color;
 
   /// Stroke width in logical pixels.
   final double strokeWidth;
+
+  /// True for pedestrian transfer segments rendered as dashed lines.
+  final bool isDashed;
 }
 
 /// Named 3D camera viewpoint across key Maribor transit hubs.
@@ -67,10 +93,10 @@ class GoogleMap3DCameraPreset {
     required this.id,
     required this.label,
     required this.center,
-    this.tilt = 62,
+    this.tilt = 60,
     this.heading = 18,
     this.range = 1750,
-    this.mobileZoom = 15.8,
+    this.mobileZoom = 16.0,
   });
 
   /// Preset ID.
@@ -82,16 +108,16 @@ class GoogleMap3DCameraPreset {
   /// Target WGS84 center.
   final LatLng center;
 
-  /// Camera tilt angle in degrees.
+  /// Camera tilt angle in degrees (`0..65`).
   final double tilt;
 
-  /// Camera compass bearing in degrees.
+  /// Camera compass bearing in degrees (`0..360`).
   final double heading;
 
-  /// Web 3D camera range in meters.
+  /// Legacy range kept for compatibility.
   final double range;
 
-  /// Mobile GoogleMap zoom level.
+  /// Target Google Maps zoom level (`>= 15.2` reveals 3D buildings).
   final double mobileZoom;
 }
 
@@ -101,10 +127,9 @@ const List<GoogleMap3DCameraPreset> maribor3DCameraPresets = [
     id: 'center',
     label: 'Glavni trg & Stari most',
     center: LatLng(46.5576, 15.6455),
-    tilt: 62,
+    tilt: 60,
     heading: 18,
-    range: 1700,
-    mobileZoom: 16.0,
+    mobileZoom: 16.2,
   ),
   GoogleMap3DCameraPreset(
     id: 'ap_maribor',
@@ -112,7 +137,6 @@ const List<GoogleMap3DCameraPreset> maribor3DCameraPresets = [
     center: LatLng(46.5594, 15.6561),
     tilt: 60,
     heading: 315,
-    range: 1550,
     mobileZoom: 16.2,
   ),
   GoogleMap3DCameraPreset(
@@ -121,16 +145,14 @@ const List<GoogleMap3DCameraPreset> maribor3DCameraPresets = [
     center: LatLng(46.5495, 15.6465),
     tilt: 58,
     heading: 42,
-    range: 1900,
-    mobileZoom: 15.5,
+    mobileZoom: 15.8,
   ),
   GoogleMap3DCameraPreset(
     id: 'vzpenjaca',
     label: 'Pohorska vzpenjača',
     center: LatLng(46.5343, 15.6042),
-    tilt: 66,
+    tilt: 62,
     heading: 215,
-    range: 2100,
-    mobileZoom: 15.4,
+    mobileZoom: 15.8,
   ),
 ];

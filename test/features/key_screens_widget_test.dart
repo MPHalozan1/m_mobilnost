@@ -1,17 +1,14 @@
 // Responsive web breakpoint tests (Compact 390, Medium 768, Expanded 1280), touch targets, map list parity, simulated badge, and reduced motion.
 
-import 'dart:typed_data';
-
 import 'package:flutter/material.dart';
-import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:m_mobilnost/app/app.dart';
 import 'package:m_mobilnost/app/router.dart';
 import 'package:m_mobilnost/core/accessibility/a11y_settings.dart';
+import 'package:m_mobilnost/core/maps/google_map_3d_widget.dart';
 import 'package:m_mobilnost/core/network/connectivity_provider.dart';
-import 'package:m_mobilnost/core/network/map_tile_provider.dart';
 import 'package:m_mobilnost/core/widgets/big_button.dart';
 import 'package:m_mobilnost/core/widgets/occupancy_strip.dart';
 import 'package:m_mobilnost/core/widgets/simulated_data_badge.dart';
@@ -27,25 +24,6 @@ import 'package:m_mobilnost/features/map/data/location_service.dart';
 import 'package:m_mobilnost/features/trip_planner/domain/route_planner.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-
-final Uint8List _transparent1x1Png = Uint8List.fromList(<int>[
-  0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
-  0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
-  0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
-  0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,
-  0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41,
-  0x54, 0x78, 0x9C, 0x63, 0x00, 0x01, 0x00, 0x00,
-  0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00,
-  0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE,
-  0x42, 0x60, 0x82,
-]);
-
-class _MemoryTileProvider extends TileProvider {
-  @override
-  ImageProvider getImage(TileCoordinates coordinates, TileLayer options) {
-    return MemoryImage(_transparent1x1Png);
-  }
-}
 
 Future<ProviderContainer> _buildAppContainer({
   bool useSimulatedLive = true,
@@ -88,7 +66,6 @@ Future<ProviderContainer> _buildAppContainer({
     overrides: [
       sharedPreferencesProvider.overrideWithValue(prefs),
       isOfflineProvider.overrideWithValue(false),
-      mapTileProviderProvider.overrideWithValue(_MemoryTileProvider()),
       ticketRepositoryProvider.overrideWithValue(ticketRepo),
       noticeRepositoryProvider.overrideWithValue(noticeRepo),
       locationServiceProvider.overrideWithValue(
@@ -210,26 +187,26 @@ void main() {
 
       final router = container.read(routerProvider);
 
-      // Navigate to /map -> verify FlutterMap is visible, then toggle List view.
+      // Navigate to /map -> verify GoogleMap3DWidget is visible, then toggle List view.
       router.go('/map');
       await tester.pumpAndSettle();
-      expect(find.byType(FlutterMap), findsOneWidget);
+      expect(find.byType(GoogleMap3DWidget), findsOneWidget);
 
       await tester.tap(find.text('List'));
       await tester.pumpAndSettle();
-      expect(find.byType(FlutterMap), findsNothing);
+      expect(find.byType(GoogleMap3DWidget), findsNothing);
 
-      // Navigate to /plan with endpoints -> verify FlutterMap preview toggles to List view.
+      // Navigate to /plan with endpoints -> verify GoogleMap3DWidget preview toggles to List view.
       router.go('/plan?fromStopId=glavni_trg&toStopId=ukc_maribor');
       await tester.pumpAndSettle();
-      expect(find.byType(FlutterMap), findsOneWidget);
+      expect(find.byType(GoogleMap3DWidget), findsOneWidget);
 
       final listBtn = find.widgetWithText(BigButton, 'List');
       await tester.ensureVisible(listBtn);
       await tester.pumpAndSettle();
       await tester.tap(listBtn);
       await tester.pumpAndSettle();
-      expect(find.byType(FlutterMap), findsNothing);
+      expect(find.byType(GoogleMap3DWidget), findsNothing);
     });
 
     testWidgets(

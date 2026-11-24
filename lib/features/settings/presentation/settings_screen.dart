@@ -12,6 +12,7 @@ import '../../../core/accessibility/favorites_provider.dart';
 import '../../../core/accessibility/semantics_helpers.dart';
 import '../../../core/layout/breakpoints.dart';
 import '../../../core/layout/responsive_builder.dart';
+import '../../../core/maps/google_map_models.dart';
 import '../../../core/network/connectivity_provider.dart';
 import '../../../core/widgets/big_button.dart';
 import '../../../core/widgets/offline_banner.dart';
@@ -84,9 +85,46 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
     final appearanceSection = _SectionCard(
       title: l10n.settingsSectionAppearance,
-      child: _ThemeSelector(
-        selected: settings.themeMode,
-        onSelected: settingsNotifier.setThemeMode,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _ThemeSelector(
+            selected: settings.themeMode,
+            onSelected: settingsNotifier.setThemeMode,
+          ),
+          const SizedBox(height: 16),
+          Text(
+            'Slog zemljevida',
+            style: Theme.of(context).textTheme.titleMedium,
+          ),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              ChoiceChip(
+                label: const Text('Temni'),
+                selected: settings.mapStylePreset == GoogleMapStylePreset.dark,
+                onSelected: (_) =>
+                    settingsNotifier.setMapStylePreset(GoogleMapStylePreset.dark),
+              ),
+              ChoiceChip(
+                label: const Text('Svetli'),
+                selected: settings.mapStylePreset == GoogleMapStylePreset.light,
+                onSelected: (_) =>
+                    settingsNotifier.setMapStylePreset(GoogleMapStylePreset.light),
+              ),
+              ChoiceChip(
+                label: const Text('Satelit'),
+                selected:
+                    settings.mapStylePreset == GoogleMapStylePreset.satellite,
+                onSelected: (_) => settingsNotifier.setMapStylePreset(
+                  GoogleMapStylePreset.satellite,
+                ),
+              ),
+            ],
+          ),
+        ],
       ),
     );
 
@@ -94,6 +132,14 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       title: l10n.settingsSectionAccessibility,
       child: Column(
         children: [
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: Text(l10n.planAccessibleOnly),
+            subtitle: const Text('Prikaži samo nizkopodne avtobuse s klančino'),
+            secondary: const Icon(Icons.accessible_rounded),
+            value: settings.wheelchairAccessibleOnly,
+            onChanged: settingsNotifier.setWheelchairAccessibleOnly,
+          ),
           SwitchListTile(
             contentPadding: EdgeInsets.zero,
             title: Text(l10n.settingsExtraLargeText),

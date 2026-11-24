@@ -14,6 +14,7 @@ import 'package:m_mobilnost/core/accessibility/favorites_provider.dart';
 import 'package:m_mobilnost/core/network/connectivity_provider.dart';
 import 'package:m_mobilnost/core/network/data_freshness.dart';
 import 'package:m_mobilnost/core/widgets/big_button.dart';
+import 'package:m_mobilnost/core/widgets/bus_occupancy_cutaway.dart';
 import 'package:m_mobilnost/core/widgets/occupancy_strip.dart';
 import 'package:m_mobilnost/core/widgets/status_chip.dart';
 import 'package:m_mobilnost/data/mock/mock_line_repository.dart';
@@ -450,7 +451,7 @@ void main() {
 
       // Sign in demo user and issue an active ticket.
       final user = await container.read(authRepositoryProvider).signIn(
-            email: 'demo@marprom.test',
+            email: 'demo@marprom.si',
             password: 'demo1234',
           );
       await ticketRepo.purchaseTicket(
@@ -468,7 +469,12 @@ void main() {
 
       expect(find.text('Where are we going today?'), findsOneWidget);
       expect(find.byType(StatusChip), findsWidgets);
-      expect(find.byType(OccupancyStrip), findsWidgets);
+      expect(
+        find.byWidgetPredicate(
+          (w) => w is OccupancyStrip || w is BusOccupancyCutaway,
+        ),
+        findsWidgets,
+      );
       expect(find.textContaining('Last updated:'), findsOneWidget);
       expect(find.text('Active ticket'), findsOneWidget);
       expect(find.text('Service alert on your favourite line'), findsOneWidget);

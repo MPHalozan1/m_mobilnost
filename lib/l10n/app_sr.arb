@@ -421,7 +421,7 @@
   "accountEmailLabel": "E-adresa",
   "accountPasswordLabel": "Lozinka",
   "accountDobLabel": "Datum rođenja",
-  "accountDemoAccountHint": "Demo korisnik: demo@marprom.test / demo1234",
+  "accountDemoAccountHint": "Demo korisnik: demo@marprom.si / demo1234",
   "accountYouthEligible": "Pravo na omladinsku / studentsku tarifu",
   "accountSeniorEligible": "Pravo na penzionersku tarifu",
   "accountResetSent": "Testni link za reset lozinke pripremljen za {email}.",

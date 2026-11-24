@@ -1,18 +1,14 @@
 // Unit and widget tests for RoutePlanner, TripPlannerScreen, and NearestStopScreen.
 
-import 'dart:convert';
-import 'dart:typed_data';
-
 import 'package:flutter/material.dart';
-import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:m_mobilnost/app/app.dart';
 import 'package:m_mobilnost/core/accessibility/a11y_settings.dart';
+import 'package:m_mobilnost/core/maps/google_map_3d_widget.dart';
 import 'package:m_mobilnost/core/network/connectivity_provider.dart';
 import 'package:m_mobilnost/core/network/data_freshness.dart';
-import 'package:m_mobilnost/core/network/map_tile_provider.dart';
 import 'package:m_mobilnost/core/widgets/big_button.dart';
 import 'package:m_mobilnost/core/widgets/occupancy_strip.dart';
 import 'package:m_mobilnost/data/mock/mock_line_repository.dart';
@@ -32,17 +28,6 @@ import 'package:m_mobilnost/features/trip_planner/domain/route_planner.dart';
 import 'package:m_mobilnost/features/trip_planner/presentation/trip_planner_screen.dart';
 import 'package:m_mobilnost/l10n/app_localizations.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-
-class _MemoryTestTileProvider extends TileProvider {
-  static final Uint8List _transparentPng = base64Decode(
-    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
-  );
-
-  @override
-  ImageProvider getImage(TileCoordinates coordinates, TileLayer options) {
-    return MemoryImage(_transparentPng);
-  }
-}
 
 /// Deterministic stub line repository for controlled tight-transfer and
 /// earliest-arrival-vs-distance tests.
@@ -651,7 +636,6 @@ void main() {
         overrides: [
           sharedPreferencesProvider.overrideWithValue(prefs),
           isOfflineProvider.overrideWithValue(false),
-          mapTileProviderProvider.overrideWithValue(_MemoryTestTileProvider()),
           routePlannerProvider.overrideWithValue(
             RoutePlanner(
               lineRepository: const MockLineRepository(),
@@ -708,7 +692,7 @@ void main() {
       expect(listBtn, findsOneWidget);
       await tester.tap(listBtn);
       await tester.pumpAndSettle();
-      expect(find.byType(FlutterMap), findsNothing);
+      expect(find.byType(GoogleMap3DWidget), findsNothing);
 
       // Swap endpoints and verify destination updated.
       await tester.tap(swapBtn);

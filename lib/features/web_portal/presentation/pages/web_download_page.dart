@@ -1,26 +1,57 @@
 // Dedicated Mobile App Download Page serving real Android APK + iOS install & mockup.
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../../core/accessibility/a11y_settings.dart';
+import '../../../../core/config/download_links.dart';
 import '../../../../core/theme/colors.dart';
 import '../marprom_web_strings.dart';
 
-/// Marprom Web Download Page (`/download`) providing direct Android `.apk` download,
-/// scannable QR codes, iOS installation steps, and an interactive phone mockup.
+/// Marprom Web Download Page (`/download`) providing direct Android `.apk` download
+/// from GitHub Releases on Web, scannable QR codes, and iOS PWA guidance.
 class WebDownloadPage extends ConsumerWidget {
   /// Creates the [WebDownloadPage].
-  const WebDownloadPage({super.key});
+  const WebDownloadPage({super.key, this.forceWebPreview = false});
 
-  Uri _apkUri() => Uri.base.resolve('downloads/m-mobilnost.apk');
+  /// Allows widget tests running on VM (`!kIsWeb`) to preview the Web download layout.
+  final bool forceWebPreview;
+
+  Uri _apkUri() => marpromAndroidApkUri;
 
   Uri _webAppUri() => Uri.base.resolve('');
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    if (!kIsWeb && !forceWebPreview) {
+      return Padding(
+        padding: const EdgeInsets.all(24),
+        child: Card(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(
+                  Icons.verified_rounded,
+                  size: 48,
+                  color: MarpromColors.mobilityGreen,
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  'Uporabljate mobilno aplikacijo M Mobilnost',
+                  style: Theme.of(context).textTheme.titleLarge,
+                  textAlign: TextAlign.center,
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
     final settings = ref.watch(a11ySettingsProvider);
     final ws = MarpromWebStrings.of(settings.localeCode);
     final width = MediaQuery.sizeOf(context).width;

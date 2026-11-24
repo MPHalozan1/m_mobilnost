@@ -1,13 +1,13 @@
 // Dedicated full-screen Google Maps view of all 19 Marprom lines, street routes, and live buses.
 
 import 'package:flutter/material.dart';
-import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/models/bus_position.dart';
 import '../../data/repositories/repository_providers.dart';
 import '../../data/seed/seed_lines.dart';
 import '../../data/seed/seed_stops.dart';
+import '../accessibility/a11y_settings.dart';
 import '../network/route_geometry_service.dart';
 import '../theme/colors.dart';
 import '../utils/geo.dart';
@@ -59,15 +59,16 @@ class FullScreenTransitMapPage extends ConsumerStatefulWidget {
 
 class _FullScreenTransitMapPageState
     extends ConsumerState<FullScreenTransitMapPage> {
-  final MapController _mapController = MapController();
   String? _selectedLineId;
   int _directionIndex = 0;
   bool _controlsCollapsed = false;
+  bool _accessibleOnly = false;
 
   @override
   void initState() {
     super.initState();
     _selectedLineId = widget.initialLineId;
+    _accessibleOnly = ref.read(a11ySettingsProvider).wheelchairAccessibleOnly;
     if (_selectedLineId != null && widget.initialDirectionId != null) {
       final line = seedLinesById[_selectedLineId!];
       if (line != null) {
@@ -87,12 +88,6 @@ class _FullScreenTransitMapPageState
         notifier.warmAllActiveLines();
       }
     });
-  }
-
-  @override
-  void dispose() {
-    _mapController.dispose();
-    super.dispose();
   }
 
   @override
@@ -118,11 +113,11 @@ class _FullScreenTransitMapPageState
     final selectedGoogleRoute =
         selectedKey != null ? googleRoutesMap[selectedKey] : null;
 
-    final visibleBuses = selectedLine == null
-        ? liveBuses
-        : liveBuses
-            .where((b) => b.lineId == selectedLine.id)
-            .toList(growable: false);
+    final visibleBuses = liveBuses.where((b) {
+      if (selectedLine != null && b.lineId != selectedLine.id) return false;
+      if (_accessibleOnly && !b.isWheelchairAccessible) return false;
+      return true;
+    }).toList(growable: false);
 
     BusPosition? focusedVehicle;
     if (widget.initialVehicleId != null) {
@@ -135,7 +130,6 @@ class _FullScreenTransitMapPageState
     }
 
     final polylines3D = <GoogleMap3DPolylineData>[];
-    final polylines2D = <Polyline>[];
 
     if (selectedLine != null && selectedDirection != null) {
       final pts = selectedGoogleRoute?.polylinePoints ??
@@ -151,19 +145,11 @@ class _FullScreenTransitMapPageState
             strokeWidth: 7,
           ),
         );
-        polylines2D.add(
-          Polyline(
-            points: pts,
-            color: selectedLine.color,
-            strokeWidth: 6,
-            borderColor: Colors.white,
-            borderStrokeWidth: 2,
-          ),
-        );
       }
     } else {
       final activeLineIds = {for (final b in liveBuses) b.lineId};
       for (final line in seedLines) {
+        if (_accessibleOnly && !line.isWheelchairAccessible) continue;
         final dir = line.directions.first;
         final routeKey = '${line.id}|${dir.id}';
         final googleRoute = googleRoutesMap[routeKey];
@@ -181,13 +167,6 @@ class _FullScreenTransitMapPageState
             strokeWidth: activeLineIds.contains(line.id) ? 5 : 3.5,
           ),
         );
-        polylines2D.add(
-          Polyline(
-            points: pts,
-            color: line.color.withValues(alpha: 0.8),
-            strokeWidth: activeLineIds.contains(line.id) ? 4.5 : 3.0,
-          ),
-        );
       }
     }
 
@@ -200,6 +179,8 @@ class _FullScreenTransitMapPageState
           label:
               '${bus.lineCode} (${bus.vehicleId}) • ${bus.passengerCount}/${bus.vehicleCapacity} potnikov → ${bus.nextStopName}',
           isBus: true,
+          isWheelchairAccessible: bus.isWheelchairAccessible,
+          headingDegrees: bus.headingDegrees,
           color: seedLinesById[bus.lineId]?.color ?? MarpromColors.marpromRed,
         ),
       if (selectedLine != null && selectedDirection != null)
@@ -210,53 +191,9 @@ class _FullScreenTransitMapPageState
               position: seedStopsById[stopId]!.position,
               label: seedStopsById[stopId]!.name,
               isBus: false,
+              isWheelchairAccessible: seedStopsById[stopId]!.isStepFree,
               color: selectedLine.color,
             ),
-    ];
-
-    final markers2D = <Marker>[
-      if (selectedLine != null && selectedDirection != null)
-        for (final stopId in selectedDirection.stopIds)
-          if (seedStopsById[stopId] != null)
-            Marker(
-              point: seedStopsById[stopId]!.position,
-              width: 24,
-              height: 24,
-              child: Center(
-                child: Container(
-                  width: 12,
-                  height: 12,
-                  decoration: BoxDecoration(
-                    color: scheme.surface,
-                    shape: BoxShape.circle,
-                    border: Border.all(color: selectedLine.color, width: 2.5),
-                  ),
-                ),
-              ),
-            ),
-      for (final bus in visibleBuses)
-        Marker(
-          point: bus.position,
-          width: 48,
-          height: 26,
-          child: Container(
-            alignment: Alignment.center,
-            decoration: BoxDecoration(
-              color: seedLinesById[bus.lineId]?.color ?? MarpromColors.marpromRed,
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(color: Colors.white, width: 2),
-            ),
-            child: Text(
-              bus.lineCode,
-              textScaler: TextScaler.noScaling,
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 11,
-                fontWeight: FontWeight.w800,
-              ),
-            ),
-          ),
-        ),
     ];
 
     final initialCenter = focusedVehicle?.position ??
@@ -272,7 +209,6 @@ class _FullScreenTransitMapPageState
               key: const Key('fullscreen_google_map'),
               initialCenter: initialCenter,
               initialZoom: 13.6,
-              mapController: _mapController,
               initialUse3D: false,
               showPresets: false,
               showStatusPill: true,
@@ -282,8 +218,6 @@ class _FullScreenTransitMapPageState
                   '${selectedLine?.id}|${selectedDirection?.id}|${polylines3D.isNotEmpty ? polylines3D.first.points.length : 0}',
               polylines3D: polylines3D,
               markers3D: markers3D,
-              polylines2D: polylines2D,
-              markers2D: markers2D,
               activeBusCount: visibleBuses.length,
               totalPassengers: visibleBuses.fold<int>(
                 0,
@@ -434,6 +368,20 @@ class _FullScreenTransitMapPageState
                                 children: [
                                   Padding(
                                     padding: const EdgeInsets.only(right: 6),
+                                    child: FilterChip(
+                                      avatar: const Icon(
+                                        Icons.accessible_rounded,
+                                        size: 16,
+                                      ),
+                                      label: const Text('Dostopni'),
+                                      selected: _accessibleOnly,
+                                      onSelected: (v) => setState(
+                                        () => _accessibleOnly = v,
+                                      ),
+                                    ),
+                                  ),
+                                  Padding(
+                                    padding: const EdgeInsets.only(right: 6),
                                     child: ChoiceChip(
                                       label: const Text('Vse'),
                                       selected: _selectedLineId == null,
@@ -444,6 +392,7 @@ class _FullScreenTransitMapPageState
                                     ),
                                   ),
                                   for (final line in seedLines)
+                                    if (!_accessibleOnly || line.isWheelchairAccessible)
                                     Padding(
                                       padding: const EdgeInsets.only(right: 6),
                                       child: ChoiceChip(

@@ -30,6 +30,13 @@ class _LinesScreenState extends ConsumerState<LinesScreen> {
   final TextEditingController _searchController = TextEditingController();
   String _query = '';
   bool _favoritesOnly = false;
+  bool _accessibleOnly = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _accessibleOnly = ref.read(a11ySettingsProvider).wheelchairAccessibleOnly;
+  }
 
   @override
   void dispose() {
@@ -41,6 +48,9 @@ class _LinesScreenState extends ConsumerState<LinesScreen> {
     final trimmed = _query.trim().toLowerCase();
     return lines.where((line) {
       if (_favoritesOnly && !favoriteIds.contains(line.id)) {
+        return false;
+      }
+      if (_accessibleOnly && !line.isWheelchairAccessible) {
         return false;
       }
       if (trimmed.isEmpty) return true;
@@ -129,6 +139,14 @@ class _LinesScreenState extends ConsumerState<LinesScreen> {
                                 onTap: () =>
                                     setState(() => _favoritesOnly = true),
                               ),
+                              _FilterTabButton(
+                                label: l10n.linesLowFloor,
+                                icon: Icons.accessible_rounded,
+                                selected: _accessibleOnly,
+                                onTap: () => setState(
+                                  () => _accessibleOnly = !_accessibleOnly,
+                                ),
+                              ),
                             ],
                           ),
                           const SizedBox(height: 16),
@@ -136,15 +154,20 @@ class _LinesScreenState extends ConsumerState<LinesScreen> {
                             EmptyStateView(
                               icon: Icons.directions_bus_outlined,
                               title: l10n.commonEmpty,
-                              actionLabel: _query.isNotEmpty || _favoritesOnly
+                              actionLabel: _query.isNotEmpty ||
+                                      _favoritesOnly ||
+                                      _accessibleOnly
                                   ? l10n.commonClear
                                   : null,
-                              onAction: _query.isNotEmpty || _favoritesOnly
+                              onAction: _query.isNotEmpty ||
+                                      _favoritesOnly ||
+                                      _accessibleOnly
                                   ? () {
                                       _searchController.clear();
                                       setState(() {
                                         _query = '';
                                         _favoritesOnly = false;
+                                        _accessibleOnly = false;
                                       });
                                     }
                                   : null,
@@ -265,7 +288,7 @@ class _LineSummaryCard extends StatelessWidget {
                           color: line.color,
                           showLineWord: true,
                         ),
-                        if (line.isLowFloorDefault)
+                        if (line.isWheelchairAccessible)
                           Container(
                             padding: const EdgeInsets.symmetric(
                               horizontal: 8,
@@ -298,6 +321,20 @@ class _LineSummaryCard extends StatelessWidget {
                               ],
                             ),
                           ),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 4,
+                          ),
+                          decoration: BoxDecoration(
+                            color: scheme.surfaceContainerHighest,
+                            borderRadius: BorderRadius.circular(999),
+                          ),
+                          child: Text(
+                            'max ${line.maxCapacity}',
+                            style: Theme.of(context).textTheme.labelMedium,
+                          ),
+                        ),
                       ],
                     ),
                     const SizedBox(height: 10),

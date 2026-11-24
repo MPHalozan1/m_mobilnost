@@ -1,7 +1,6 @@
 // Displays selected trip Map/List preview, "What do I do next?" steps, and TTS.
 
 import 'package:flutter/material.dart';
-import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:latlong2/latlong.dart';
@@ -11,8 +10,6 @@ import 'package:m_mobilnost/core/accessibility/semantics_helpers.dart';
 import 'package:m_mobilnost/core/maps/full_screen_transit_map.dart';
 import 'package:m_mobilnost/core/maps/google_map_3d_widget.dart';
 import 'package:m_mobilnost/core/maps/google_map_models.dart';
-import 'package:m_mobilnost/core/maps/google_web_views.dart';
-import 'package:m_mobilnost/core/network/map_tile_provider.dart';
 import 'package:m_mobilnost/core/network/route_geometry_service.dart';
 import 'package:m_mobilnost/core/theme/colors.dart';
 import 'package:m_mobilnost/core/utils/distance.dart';
@@ -70,7 +67,6 @@ class _TripPreviewAndStepsState extends ConsumerState<TripPreviewAndSteps> {
   Widget build(BuildContext context) {
     final l10n = context.l10n;
     final settings = ref.watch(a11ySettingsProvider);
-    final tileProvider = ref.watch(mapTileProviderProvider);
     final steps = widget.planner.buildInstructions(
       widget.option,
       destinationLabel: widget.destinationLabel,
@@ -123,7 +119,6 @@ class _TripPreviewAndStepsState extends ConsumerState<TripPreviewAndSteps> {
                   _RouteMapPreview(
                     option: widget.option,
                     linesById: widget.linesById,
-                    tileProvider: tileProvider,
                   ),
               ],
             ),
@@ -221,12 +216,10 @@ class _RouteMapPreview extends ConsumerWidget {
   const _RouteMapPreview({
     required this.option,
     required this.linesById,
-    required this.tileProvider,
   });
 
   final TripOption option;
   final Map<String, BusLine> linesById;
-  final TileProvider? tileProvider;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -260,9 +253,7 @@ class _RouteMapPreview extends ConsumerWidget {
     }
 
     final hasSpan = _hasCoordinateSpan(allPoints);
-    final polylines = <Polyline>[];
     final polylines3D = <GoogleMap3DPolylineData>[];
-    final markers = <Marker>[];
     final markers3D = <GoogleMap3DMarkerData>[];
 
     for (var i = 0; i < option.legs.length; i++) {
@@ -271,17 +262,8 @@ class _RouteMapPreview extends ConsumerWidget {
       if (legPoints == null || legPoints.isEmpty) continue;
 
       final isWalk = leg.type == TripLegType.walk;
-      final busColor = linesById[leg.lineId]?.color ?? scheme.primary;
-      polylines.add(
-        Polyline(
-          points: legPoints,
-          strokeWidth: isWalk ? 4.0 : 5.5,
-          color: isWalk ? scheme.outline : busColor,
-          pattern: isWalk
-              ? StrokePattern.dashed(segments: const [8, 6])
-              : const StrokePattern.solid(),
-        ),
-      );
+      final lineMeta = linesById[leg.lineId];
+      final busColor = lineMeta?.color ?? scheme.primary;
       if (legPoints.length >= 2) {
         polylines3D.add(
           GoogleMap3DPolylineData(
@@ -289,18 +271,12 @@ class _RouteMapPreview extends ConsumerWidget {
             points: legPoints,
             color: isWalk ? scheme.outline : busColor,
             strokeWidth: isWalk ? 4.0 : 6.5,
+            isDashed: isWalk,
           ),
         );
       }
 
       if (i == 0) {
-        markers.add(
-          _markerPin(
-            point: legPoints.first,
-            color: scheme.secondary,
-            icon: Icons.trip_origin_rounded,
-          ),
-        );
         markers3D.add(
           GoogleMap3DMarkerData(
             id: 'origin_${option.id}',
@@ -311,27 +287,15 @@ class _RouteMapPreview extends ConsumerWidget {
         );
       }
       if (!isWalk) {
-        markers.add(
-          _markerPin(
-            point: legPoints.first,
-            color: busColor,
-            icon: Icons.directions_bus_rounded,
-          ),
-        );
-        markers.add(
-          _markerPin(
-            point: legPoints.last,
-            color: busColor,
-            icon: Icons.flag_outlined,
-          ),
-        );
-        final lineCode = linesById[leg.lineId]?.code ?? leg.lineCode;
+        final lineCode = lineMeta?.code ?? leg.lineCode;
+        final isAcc = leg.isAccessible && (lineMeta?.isWheelchairAccessible ?? true);
         markers3D.add(
           GoogleMap3DMarkerData(
             id: 'board_${option.id}_$i',
             position: legPoints.first,
             shortLabel: lineCode,
             isBus: lineCode != null,
+            isWheelchairAccessible: isAcc,
             label: '${lineCode ?? ''} • ${leg.fromName}',
             color: busColor,
           ),
@@ -346,13 +310,6 @@ class _RouteMapPreview extends ConsumerWidget {
         );
       }
       if (i == option.legs.length - 1) {
-        markers.add(
-          _markerPin(
-            point: legPoints.last,
-            color: scheme.primary,
-            icon: Icons.place_rounded,
-          ),
-        );
         markers3D.add(
           GoogleMap3DMarkerData(
             id: 'dest_${option.id}',
@@ -362,41 +319,6 @@ class _RouteMapPreview extends ConsumerWidget {
           ),
         );
       }
-    }
-
-    if (isFlutterTestEnvironment) {
-      return SizedBox(
-        height: 280,
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(14),
-          child: FlutterMap(
-            key: ValueKey('trip_map_${option.id}'),
-            options: hasSpan
-                ? MapOptions(
-                    initialCameraFit: CameraFit.coordinates(
-                      coordinates: allPoints,
-                      padding: const EdgeInsets.all(36),
-                      maxZoom: 16,
-                    ),
-                  )
-                : MapOptions(
-                    initialCenter: allPoints.isNotEmpty
-                        ? allPoints.first
-                        : GeoUtils.mariborCenter,
-                    initialZoom: 14.5,
-                  ),
-            children: [
-              TileLayer(
-                urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                userAgentPackageName: 'si.marprom.m_mobilnost',
-                tileProvider: tileProvider,
-              ),
-              PolylineLayer(polylines: polylines),
-              MarkerLayer(markers: markers),
-            ],
-          ),
-        ),
-      );
     }
 
     final firstBusLeg =
@@ -418,8 +340,6 @@ class _RouteMapPreview extends ConsumerWidget {
           fitSignature: '${option.id}|${allPoints.length}',
           polylines3D: polylines3D,
           markers3D: markers3D,
-          polylines2D: polylines,
-          markers2D: markers,
           onFullScreenToggle: () => openFullScreenTransitMap(
             context,
             initialLineId: firstBusLeg?.lineId,
@@ -440,26 +360,6 @@ class _RouteMapPreview extends ConsumerWidget {
       }
     }
     return false;
-  }
-
-  static Marker _markerPin({
-    required LatLng point,
-    required Color color,
-    required IconData icon,
-  }) {
-    return Marker(
-      point: point,
-      width: 36,
-      height: 36,
-      child: Container(
-        decoration: BoxDecoration(
-          color: color,
-          shape: BoxShape.circle,
-          border: Border.all(color: Colors.white, width: 2),
-        ),
-        child: Icon(icon, color: Colors.white, size: 18),
-      ),
-    );
   }
 }
 

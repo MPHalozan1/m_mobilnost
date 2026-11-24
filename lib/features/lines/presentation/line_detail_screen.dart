@@ -1,7 +1,6 @@
 // Detailed bus line view with direction switcher, map/list toggle, segment crowding, and departures.
 
 import 'package:flutter/material.dart';
-import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:latlong2/latlong.dart';
@@ -20,6 +19,7 @@ import 'package:m_mobilnost/core/network/connectivity_provider.dart';
 import 'package:m_mobilnost/core/network/route_geometry_service.dart';
 import 'package:m_mobilnost/core/utils/time_format.dart';
 import 'package:m_mobilnost/core/widgets/big_button.dart';
+import 'package:m_mobilnost/core/widgets/bus_occupancy_cutaway.dart';
 import 'package:m_mobilnost/core/widgets/occupancy_strip.dart';
 import 'package:m_mobilnost/core/widgets/offline_banner.dart';
 import 'package:m_mobilnost/core/widgets/state_views.dart';
@@ -30,7 +30,6 @@ import 'package:m_mobilnost/data/models/departure.dart';
 import 'package:m_mobilnost/data/models/occupancy.dart';
 import 'package:m_mobilnost/data/repositories/repository_providers.dart';
 import 'package:m_mobilnost/data/seed/seed_timetables.dart';
-import 'package:m_mobilnost/features/map/presentation/widgets/maribor_transit_map.dart';
 import 'package:m_mobilnost/l10n/app_localizations.dart';
 
 import '../data/transit_providers.dart';
@@ -311,6 +310,13 @@ class _LineDetailScreenState extends ConsumerState<LineDetailScreen> {
                                     ),
                                     const SizedBox(height: 16),
                                   ],
+                                  if (dirBuses.isNotEmpty) ...[
+                                    BusOccupancyCutaway.fromBusPosition(
+                                      dirBuses.first,
+                                      compact: true,
+                                    ),
+                                    const SizedBox(height: 16),
+                                  ],
                                   stopsAndSegments,
                                   const SizedBox(height: 16),
                                   departuresSection,
@@ -401,20 +407,20 @@ class _LineDetailScreenState extends ConsumerState<LineDetailScreen> {
                   color: line.color,
                   showLineWord: true,
                 ),
-                if (line.isLowFloorDefault)
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Icon(Icons.accessible_rounded, size: 18),
-                      const SizedBox(width: 4),
-                      Flexible(
-                        child: Text(
-                          l10n.linesLowFloor,
-                          style: Theme.of(context).textTheme.bodyMedium,
-                        ),
-                      ),
-                    ],
+                if (line.isWheelchairAccessible)
+                  Chip(
+                    avatar: const Icon(Icons.accessible_rounded, size: 18),
+                    label: Text('${l10n.linesLowFloor} • klančina'),
                   ),
+                if (line.hasAudioAnnouncements)
+                  const Chip(
+                    avatar: Icon(Icons.volume_up_rounded, size: 18),
+                    label: Text('Zvočne najave'),
+                  ),
+                Chip(
+                  avatar: const Icon(Icons.groups_rounded, size: 18),
+                  label: Text('Kapaciteta: ${line.maxCapacity}'),
+                ),
               ],
             ),
             const SizedBox(height: 10),
@@ -527,7 +533,6 @@ class _LineDetailScreenState extends ConsumerState<LineDetailScreen> {
     required String activeStopId,
     required List<BusPosition> buses,
   }) {
-    final l10n = context.l10n;
     final googleRoute = ref.watch(
       googleLineRoutesProvider.select((m) => m['${line.id}|${direction.id}']),
     );
@@ -538,116 +543,6 @@ class _LineDetailScreenState extends ConsumerState<LineDetailScreen> {
         routeGeometry.valueOrNull ??
         direction.roadPolyline ??
         direction.polyline;
-    final fit = points.length >= 2
-        ? CameraFit.bounds(
-            bounds: LatLngBounds.fromPoints(points),
-            padding: const EdgeInsets.all(36),
-            maxZoom: 15.5,
-          )
-        : null;
-
-    final markers = <Marker>[
-      for (var i = 0; i < direction.stopIds.length; i++)
-        if (stopsMap[direction.stopIds[i]] != null)
-          Marker(
-            point: stopsMap[direction.stopIds[i]]!.position,
-            width: 56,
-            height: 56,
-            child: Semantics(
-              button: true,
-              label: stopsMap[direction.stopIds[i]]!.name,
-              child: GestureDetector(
-                onTap: () => setState(
-                  () => _selectedStopId = direction.stopIds[i],
-                ),
-                child: Center(
-                  child: Container(
-                    width: direction.stopIds[i] == activeStopId ? 28 : 22,
-                    height: direction.stopIds[i] == activeStopId ? 28 : 22,
-                    decoration: BoxDecoration(
-                      color: direction.stopIds[i] == activeStopId
-                          ? line.color
-                          : Theme.of(context).colorScheme.surface,
-                      shape: BoxShape.circle,
-                      border: Border.all(
-                        color: direction.stopIds[i] == activeStopId
-                            ? Colors.white
-                            : line.color,
-                        width: 3,
-                      ),
-                    ),
-                    child: Center(
-                      child: Text(
-                        '${i + 1}',
-                        textScaler: TextScaler.noScaling,
-                        style: TextStyle(
-                          fontSize: 10,
-                          fontWeight: FontWeight.w800,
-                          color: direction.stopIds[i] == activeStopId
-                              ? Colors.white
-                              : Theme.of(context).colorScheme.onSurface,
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ),
-      for (final bus in buses)
-        Marker(
-          point: bus.position,
-          width: 56,
-          height: 56,
-          child: Semantics(
-            button: true,
-            label: '${l10n.linesBadge(bus.lineCode)} (${bus.nextStopName})',
-            child: GestureDetector(
-              onTap: () => context.push(
-                '/tracker?lineId=${Uri.encodeComponent(bus.lineId)}'
-                '&vehicleId=${Uri.encodeComponent(bus.vehicleId)}',
-              ),
-              child: Center(
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 8,
-                    vertical: 6,
-                  ),
-                  decoration: BoxDecoration(
-                    color: line.color,
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: Colors.white, width: 2.5),
-                  ),
-                  child: const Icon(
-                    Icons.directions_bus_rounded,
-                    size: 18,
-                    color: Colors.white,
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ),
-    ];
-
-    if (isFlutterTestEnvironment) {
-      return MariborTransitMap(
-        key: ValueKey('line_map_${line.id}_${direction.id}'),
-        initialCenter: points.isNotEmpty
-            ? points[points.length ~/ 2]
-            : const LatLng(46.5547, 15.6459),
-        initialCameraFit: fit,
-        polylines: [
-          if (points.length >= 2)
-            Polyline(
-              points: points,
-              strokeWidth: 6,
-              color: line.color,
-            ),
-        ],
-        markers: markers,
-      );
-    }
 
     return GoogleMap3DWidget(
       key: ValueKey('line_google_map_${line.id}_${direction.id}'),
@@ -660,6 +555,8 @@ class _LineDetailScreenState extends ConsumerState<LineDetailScreen> {
       showStatusPill: false,
       fitBounds: true,
       fitSignature: '${line.id}|${direction.id}|${points.length}',
+      activeBusCount: buses.length,
+      totalPassengers: buses.fold<int>(0, (s, b) => s + b.passengerCount),
       polylines3D: [
         if (points.length >= 2)
           GoogleMap3DPolylineData(
@@ -677,6 +574,7 @@ class _LineDetailScreenState extends ConsumerState<LineDetailScreen> {
               position: stopsMap[stopId]!.position,
               label: stopsMap[stopId]!.name,
               isBus: false,
+              isWheelchairAccessible: stopsMap[stopId]!.isStepFree,
               color: line.color,
             ),
         for (final bus in buses)
@@ -687,18 +585,11 @@ class _LineDetailScreenState extends ConsumerState<LineDetailScreen> {
             label:
                 '${bus.lineCode} • ${bus.passengerCount}/${bus.vehicleCapacity} potnikov → ${bus.nextStopName}',
             isBus: true,
+            isWheelchairAccessible: bus.isWheelchairAccessible,
+            headingDegrees: bus.headingDegrees,
             color: line.color,
           ),
       ],
-      polylines2D: [
-        if (points.length >= 2)
-          Polyline(
-            points: points,
-            strokeWidth: 6,
-            color: line.color,
-          ),
-      ],
-      markers2D: markers,
       onFullScreenToggle: () => openFullScreenTransitMap(
         context,
         initialLineId: line.id,

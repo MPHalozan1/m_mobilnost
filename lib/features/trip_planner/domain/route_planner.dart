@@ -1,9 +1,14 @@
-// Time-dependent RAPTOR-like route planner and earliest-arrival stop finder.
+//**********************************************
+// Time-dependent RAPTOR & Google Transit      *
+//**********************************************
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:m_mobilnost/core/accessibility/a11y_settings.dart';
+import 'package:m_mobilnost/core/maps/google_web_views.dart';
 import 'package:m_mobilnost/core/network/connectivity_provider.dart';
+import 'package:m_mobilnost/core/network/google_routes_service.dart';
+import 'package:m_mobilnost/core/network/route_geometry_service.dart';
 import 'package:m_mobilnost/core/utils/distance.dart';
 import 'package:m_mobilnost/core/utils/geo.dart';
 import 'package:m_mobilnost/data/models/bus_line.dart';
@@ -18,27 +23,42 @@ import 'route_planner_models.dart';
 
 export 'route_planner_models.dart';
 
-/// Provides the [RoutePlanner] wired to [LineRepository] and [TimetableRepository].
+/// Provides the [RoutePlanner] wired to [LineRepository], [TimetableRepository],
+/// and Google Routes API v2 (`TRANSIT` + cached road polylines).
 final routePlannerProvider = Provider<RoutePlanner>((ref) {
   return RoutePlanner(
     lineRepository: ref.watch(lineRepositoryProvider),
     timetableRepository: ref.watch(timetableRepositoryProvider),
+    googleRoutesService: ref.watch(googleRoutesServiceProvider),
+    routeGeometryLookup: () {
+      final routes = ref.read(googleLineRoutesProvider);
+      return {
+        for (final entry in routes.entries)
+          if (entry.value.polylinePoints.length >= 2)
+            entry.key: entry.value.polylinePoints,
+      };
+    },
     isSimulatedLiveEnabled: () => ref.read(a11ySettingsProvider).useSimulatedLive,
     isOfflineCheck: () => ref.read(isOfflineProvider),
   );
 });
 
-/// Solves multimodal Maribor bus trips using a round-based RAPTOR-like search.
+/// Solves multimodal Maribor bus trips using Google Routes API (`TRANSIT`)
+/// and a round-based RAPTOR fallback supporting 0, 1, and 2 transfers.
 class RoutePlanner {
   /// Creates a [RoutePlanner] querying [lineRepository] and [timetableRepository].
   RoutePlanner({
     required LineRepository lineRepository,
     required TimetableRepository timetableRepository,
+    GoogleRoutesService? googleRoutesService,
+    Map<String, List<LatLng>> Function()? routeGeometryLookup,
     bool Function()? isSimulatedLiveEnabled,
     bool Function()? isOfflineCheck,
     DateTime Function()? clock,
   })  : _lines = lineRepository,
         _timetables = timetableRepository,
+        _googleRoutesService = googleRoutesService,
+        _routeGeometryLookup = routeGeometryLookup,
         _isSimulatedLiveEnabled = isSimulatedLiveEnabled ?? (() => true),
         _isOfflineCheck = isOfflineCheck ?? (() => false),
         _clock = clock ?? DateTime.now;
@@ -54,6 +74,8 @@ class RoutePlanner {
 
   final LineRepository _lines;
   final TimetableRepository _timetables;
+  final GoogleRoutesService? _googleRoutesService;
+  final Map<String, List<LatLng>> Function()? _routeGeometryLookup;
   final bool Function() _isSimulatedLiveEnabled;
   final bool Function() _isOfflineCheck;
   final DateTime Function() _clock;
@@ -62,7 +84,7 @@ class RoutePlanner {
   DateTime currentTime() => _clock();
 
   /// Finds up to [maxResults] (default 3) ranked [TripOption]s between [origin]
-  /// and [destination] using a round-based time-dependent search.
+  /// and [destination] using Google Routes (`TRANSIT`) + multi-transfer RAPTOR search.
   Future<List<TripOption>> planTrip({
     required LatLng origin,
     required LatLng destination,
@@ -72,6 +94,7 @@ class RoutePlanner {
     DateTime? targetTime,
     bool accessibleOnly = false,
     bool fewerTransfers = false,
+    TripSortMode sortMode = TripSortMode.fastest,
     double maxWalkMeters = defaultMaxWalkMeters,
     double maxTransferWalkMeters = defaultMaxTransferWalkMeters,
     bool? useSimulatedLive,
@@ -83,6 +106,8 @@ class RoutePlanner {
         (useSimulatedLive ?? _isSimulatedLiveEnabled()) &&
             !isOffline &&
             !_isOfflineCheck();
+    final effectiveFewerTransfers =
+        fewerTransfers || sortMode == TripSortMode.fewestTransfers;
 
     final allStops = await _lines.getStops();
     final allLines = await _lines.getLines();
@@ -92,7 +117,7 @@ class RoutePlanner {
         .where((s) => !accessibleOnly || s.isStepFree)
         .toList(growable: false);
     final eligibleLines = allLines
-        .where((l) => !accessibleOnly || l.isLowFloorDefault)
+        .where((l) => !accessibleOnly || l.isWheelchairAccessible)
         .toList(growable: false);
 
     if (eligibleStops.isEmpty || eligibleLines.isEmpty) {
@@ -133,12 +158,118 @@ class RoutePlanner {
         ? await _searchBackward(ctx)
         : await _searchForward(ctx);
 
-    return _rankAndSelect(
-      rawOptions,
+    final combinedOptions = List<TripOption>.from(rawOptions);
+    final routesService = _googleRoutesService;
+    if (routesService != null &&
+        !isOffline &&
+        !_isOfflineCheck() &&
+        !isFlutterTestEnvironment) {
+      final marpromByCode = <String, BusLine>{
+        for (final line in allLines) line.code.toUpperCase(): line,
+        for (final line in allLines) line.id.toUpperCase(): line,
+      };
+      final googleTransit = await routesService.computeTransitRoutes(
+        origin: origin,
+        destination: destination,
+        marpromLinesByCode: marpromByCode,
+        marpromStops: allStops,
+        departureTime: mode == TripTimeMode.arriveBy ? null : anchorTime,
+        arrivalTime: mode == TripTimeMode.arriveBy ? anchorTime : null,
+        fewerTransfers: effectiveFewerTransfers,
+        originLabel: originLabel,
+        destinationLabel: destinationLabel,
+      );
+      for (final gOpt in googleTransit) {
+        if (accessibleOnly && !gOpt.isAccessible) continue;
+        combinedOptions.add(gOpt);
+      }
+    }
+
+    final selected = _rankAndSelect(
+      combinedOptions,
       mode: mode,
-      fewerTransfers: fewerTransfers,
+      fewerTransfers: effectiveFewerTransfers,
       maxResults: maxResults,
     );
+
+    if (routesService == null ||
+        isOffline ||
+        _isOfflineCheck() ||
+        isFlutterTestEnvironment ||
+        selected.isEmpty) {
+      return selected;
+    }
+
+    return _enrichSelectedWalkPolylines(selected, routesService);
+  }
+
+  Future<List<TripOption>> _enrichSelectedWalkPolylines(
+    List<TripOption> options,
+    GoogleRoutesService routesService,
+  ) async {
+    final enriched = <TripOption>[];
+    for (final opt in options) {
+      var changed = false;
+      final newLegs = <TripLeg>[];
+      for (final leg in opt.legs) {
+        if (leg.type == TripLegType.walk &&
+            leg.polyline.length == 2 &&
+            GeoUtils.haversineMeters(leg.polyline.first, leg.polyline.last) > 35) {
+          final roadWalk = await routesService.computeWalkPolyline(
+            leg.polyline.first,
+            leg.polyline.last,
+          );
+          if (roadWalk.length > 2) {
+            changed = true;
+            newLegs.add(
+              TripLeg(
+                type: leg.type,
+                fromName: leg.fromName,
+                toName: leg.toName,
+                fromStopId: leg.fromStopId,
+                toStopId: leg.toStopId,
+                startTime: leg.startTime,
+                endTime: leg.endTime,
+                durationMinutes: leg.durationMinutes,
+                distanceMeters: leg.distanceMeters,
+                lineId: leg.lineId,
+                lineCode: leg.lineCode,
+                directionId: leg.directionId,
+                directionName: leg.directionName,
+                stopCount: leg.stopCount,
+                intermediateStopIds: leg.intermediateStopIds,
+                polyline: roadWalk,
+                occupancy: leg.occupancy,
+                delaySeconds: leg.delaySeconds,
+                isAccessible: leg.isAccessible,
+              ),
+            );
+            continue;
+          }
+        }
+        newLegs.add(leg);
+      }
+      if (!changed) {
+        enriched.add(opt);
+      } else {
+        enriched.add(
+          TripOption(
+            id: opt.id,
+            totalMinutes: opt.totalMinutes,
+            walkMeters: opt.walkMeters,
+            walkMinutes: opt.walkMinutes,
+            transferCount: opt.transferCount,
+            hasTightTransfer: opt.hasTightTransfer,
+            tightTransferMinutes: opt.tightTransferMinutes,
+            legs: newLegs,
+            freshness: opt.freshness,
+            reliabilityNote: opt.reliabilityNote,
+            isGoogleTransit: opt.isGoogleTransit,
+          ),
+        );
+      }
+    }
+    return enriched;
   }
 
   /// Finds nearby walkable stops that can reach [destination] (0 or 1 transfer),
@@ -171,7 +302,7 @@ class RoutePlanner {
         .where((s) => !accessibleOnly || s.isStepFree)
         .toList(growable: false);
     final eligibleLines = allLines
-        .where((l) => !accessibleOnly || l.isLowFloorDefault)
+        .where((l) => !accessibleOnly || l.isWheelchairAccessible)
         .toList(growable: false);
 
     final nearbyOrigin = _stopsWithinRadius(origin, eligibleStops, maxWalkMeters);
@@ -556,6 +687,133 @@ class RoutePlanner {
             }
           }
         }
+      }
+    }
+
+    // Round 3: 2-transfer fallback when 0 and 1 transfers yield no route.
+    if (options.isEmpty && round1RidesByStop.isNotEmpty) {
+      final round2ByStop = <String, _TwoTransferState>{};
+      for (final entry in round1RidesByStop.entries) {
+        final tStop1 = ctx.stopsById[entry.key];
+        if (tStop1 == null) continue;
+        final transferTargets = _transferStopsNear(ctx, tStop1);
+        for (final leg1 in entry.value.values) {
+          for (final (tStop2, xfer1WalkMeters) in transferTargets) {
+            final xfer1WalkMin = xfer1WalkMeters <= 15
+                ? 0
+                : DistanceUtils.estimateWalkMinutes(xfer1WalkMeters);
+            final arrivalAtT2 =
+                leg1.ride.alightTime.add(Duration(minutes: xfer1WalkMin));
+            final minBoard2 = arrivalAtT2.add(const Duration(minutes: 1));
+            for (final l2 in ctx.eligibleLines) {
+              if (l2.id == leg1.line.id) continue;
+              for (final dir2 in l2.directions) {
+                final tIdx2 = dir2.stopIds.indexOf(tStop2.id);
+                if (tIdx2 == -1) continue;
+                final ride2List = await _ridesForwardWithSaferBackup(
+                  ctx: ctx,
+                  line: l2,
+                  dir: dir2,
+                  fromIdx: tIdx2,
+                  toIdx: (tIdx2 + 1).clamp(0, dir2.stopIds.length - 1),
+                  earliestBoard: minBoard2,
+                  transferArrival: arrivalAtT2,
+                );
+                if (ride2List.isEmpty && tIdx2 + 1 >= dir2.stopIds.length) {
+                  continue;
+                }
+                for (var midIdx = tIdx2 + 1;
+                    midIdx < dir2.stopIds.length;
+                    midIdx++) {
+                  final midStopId = dir2.stopIds[midIdx];
+                  final midStop = ctx.stopsById[midStopId];
+                  if (midStop == null) continue;
+                  final rides2 = await _ridesForwardWithSaferBackup(
+                    ctx: ctx,
+                    line: l2,
+                    dir: dir2,
+                    fromIdx: tIdx2,
+                    toIdx: midIdx,
+                    earliestBoard: minBoard2,
+                    transferArrival: arrivalAtT2,
+                  );
+                  if (rides2.isEmpty) continue;
+                  final bestRide2 = rides2.first;
+                  final prev = round2ByStop[midStopId];
+                  if (prev == null ||
+                      bestRide2.alightTime.isBefore(prev.ride2.alightTime)) {
+                    round2ByStop[midStopId] = _TwoTransferState(
+                      leg1: leg1,
+                      tStop2: tStop2,
+                      xfer1WalkMeters: xfer1WalkMeters,
+                      line2: l2,
+                      dir2: dir2,
+                      tIdx2: tIdx2,
+                      midStop: midStop,
+                      midIdx: midIdx,
+                      ride2: bestRide2,
+                    );
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+
+      for (final state2 in round2ByStop.values) {
+        final transferTargets2 = _transferStopsNear(ctx, state2.midStop);
+        for (final (tStop3, xfer2WalkMeters) in transferTargets2) {
+          final xfer2WalkMin = xfer2WalkMeters <= 15
+              ? 0
+              : DistanceUtils.estimateWalkMinutes(xfer2WalkMeters);
+          final arrivalAtT3 =
+              state2.ride2.alightTime.add(Duration(minutes: xfer2WalkMin));
+          final minBoard3 = arrivalAtT3.add(const Duration(minutes: 1));
+          for (final l3 in ctx.eligibleLines) {
+            if (l3.id == state2.line2.id) continue;
+            for (final dir3 in l3.directions) {
+              final tIdx3 = dir3.stopIds.indexOf(tStop3.id);
+              if (tIdx3 == -1) continue;
+              for (var dIdx = tIdx3 + 1; dIdx < dir3.stopIds.length; dIdx++) {
+                final dStopId = dir3.stopIds[dIdx];
+                if (!ctx.destWalkMeters.containsKey(dStopId)) continue;
+                final dStop = ctx.stopsById[dStopId];
+                if (dStop == null) continue;
+                final rides3 = await _ridesForwardWithSaferBackup(
+                  ctx: ctx,
+                  line: l3,
+                  dir: dir3,
+                  fromIdx: tIdx3,
+                  toIdx: dIdx,
+                  earliestBoard: minBoard3,
+                  transferArrival: arrivalAtT3,
+                );
+                if (rides3.isEmpty) continue;
+                final ride3 = rides3.first;
+                options.add(
+                  _buildTwoTransferOption(
+                    ctx: ctx,
+                    state2: state2,
+                    tStop3: tStop3,
+                    xfer2WalkMeters: xfer2WalkMeters,
+                    dStop: dStop,
+                    l3: l3,
+                    dir3: dir3,
+                    tIdx3: tIdx3,
+                    dIdx: dIdx,
+                    ride3: ride3,
+                  ),
+                );
+                if (options.length >= 12) break;
+              }
+              if (options.length >= 12) break;
+            }
+            if (options.length >= 12) break;
+          }
+          if (options.length >= 12) break;
+        }
+        if (options.length >= 12) break;
       }
     }
 
@@ -1200,6 +1458,140 @@ class RoutePlanner {
     );
   }
 
+  TripOption _buildTwoTransferOption({
+    required _PlannerContext ctx,
+    required _TwoTransferState state2,
+    required BusStop tStop3,
+    required double xfer2WalkMeters,
+    required BusStop dStop,
+    required BusLine l3,
+    required LineDirection dir3,
+    required int tIdx3,
+    required int dIdx,
+    required _RideSegment ride3,
+  }) {
+    final leg1 = state2.leg1;
+    final walk1Meters = leg1.walk1Meters;
+    final walk1Min = DistanceUtils.estimateWalkMinutes(walk1Meters);
+    final xfer1WalkMin = state2.xfer1WalkMeters <= 15
+        ? 0
+        : DistanceUtils.estimateWalkMinutes(state2.xfer1WalkMeters);
+    final xfer2WalkMin = xfer2WalkMeters <= 15
+        ? 0
+        : DistanceUtils.estimateWalkMinutes(xfer2WalkMeters);
+    final walk2Meters = ctx.destWalkMeters[dStop.id]!;
+    final walk2Min = DistanceUtils.estimateWalkMinutes(walk2Meters);
+
+    final start =
+        leg1.ride.boardDep.estimatedTime.subtract(Duration(minutes: walk1Min));
+    final alight1 = leg1.ride.alightTime;
+    final xfer1Arr = alight1.add(Duration(minutes: xfer1WalkMin));
+    final buf1 = state2.ride2.boardDep.estimatedTime.difference(xfer1Arr).inMinutes;
+
+    final alight2 = state2.ride2.alightTime;
+    final xfer2Arr = alight2.add(Duration(minutes: xfer2WalkMin));
+    final buf2 = ride3.boardDep.estimatedTime.difference(xfer2Arr).inMinutes;
+
+    final alight3 = ride3.alightTime;
+    final end = alight3.add(Duration(minutes: walk2Min));
+    final minBuf = buf1 < buf2 ? buf1 : buf2;
+    final isTight = minBuf <= tightTransferThresholdMinutes;
+
+    final legs = <TripLeg>[
+      if (walk1Meters > 15)
+        _walkLeg(
+          fromName: ctx.originLabel,
+          toName: leg1.oStop.name,
+          toStopId: leg1.oStop.id,
+          start: start,
+          end: leg1.ride.boardDep.estimatedTime,
+          minutes: walk1Min,
+          meters: walk1Meters,
+          fromPos: ctx.origin,
+          toPos: leg1.oStop.position,
+        ),
+      _busLeg(
+        fromStop: leg1.oStop,
+        toStop: leg1.tStop,
+        line: leg1.line,
+        dir: leg1.dir,
+        fromIdx: leg1.oIdx,
+        toIdx: leg1.tIdx,
+        ride: leg1.ride,
+      ),
+      if (state2.xfer1WalkMeters > 15)
+        _walkLeg(
+          fromName: leg1.tStop.name,
+          toName: state2.tStop2.name,
+          fromStopId: leg1.tStop.id,
+          toStopId: state2.tStop2.id,
+          start: alight1,
+          end: xfer1Arr,
+          minutes: xfer1WalkMin,
+          meters: state2.xfer1WalkMeters,
+          fromPos: leg1.tStop.position,
+          toPos: state2.tStop2.position,
+        ),
+      _busLeg(
+        fromStop: state2.tStop2,
+        toStop: state2.midStop,
+        line: state2.line2,
+        dir: state2.dir2,
+        fromIdx: state2.tIdx2,
+        toIdx: state2.midIdx,
+        ride: state2.ride2,
+      ),
+      if (xfer2WalkMeters > 15)
+        _walkLeg(
+          fromName: state2.midStop.name,
+          toName: tStop3.name,
+          fromStopId: state2.midStop.id,
+          toStopId: tStop3.id,
+          start: alight2,
+          end: xfer2Arr,
+          minutes: xfer2WalkMin,
+          meters: xfer2WalkMeters,
+          fromPos: state2.midStop.position,
+          toPos: tStop3.position,
+        ),
+      _busLeg(
+        fromStop: tStop3,
+        toStop: dStop,
+        line: l3,
+        dir: dir3,
+        fromIdx: tIdx3,
+        toIdx: dIdx,
+        ride: ride3,
+      ),
+      if (walk2Meters > 15)
+        _walkLeg(
+          fromName: dStop.name,
+          toName: ctx.destinationLabel,
+          fromStopId: dStop.id,
+          start: alight3,
+          end: end,
+          minutes: walk2Min,
+          meters: walk2Meters,
+          fromPos: dStop.position,
+          toPos: ctx.destination,
+        ),
+    ];
+
+    return TripOption(
+      id: 'xfer2_${leg1.line.id}_${state2.line2.id}_${l3.id}_'
+          '${leg1.ride.boardDep.estimatedTime.millisecondsSinceEpoch}',
+      totalMinutes: end.difference(start).inMinutes.clamp(1, 360),
+      walkMeters: walk1Meters + state2.xfer1WalkMeters + xfer2WalkMeters + walk2Meters,
+      walkMinutes: walk1Min + xfer1WalkMin + xfer2WalkMin + walk2Min,
+      transferCount: 2,
+      hasTightTransfer: isTight,
+      tightTransferMinutes: isTight ? minBuf : null,
+      legs: legs,
+      freshness: leg1.ride.boardDep.freshness,
+      reliabilityNote: isTight ? 'tight_transfer' : null,
+    );
+  }
+
   List<TripOption> _rankAndSelect(
     List<TripOption> options, {
     required TripTimeMode mode,
@@ -1353,9 +1745,19 @@ class RoutePlanner {
     required int toIdx,
     required _RideSegment ride,
   }) {
-    final poly = dir.polyline.length > toIdx
-        ? dir.polyline.sublist(fromIdx, toIdx + 1)
-        : <LatLng>[fromStop.position, toStop.position];
+    final liveRoad = _routeGeometryLookup?.call()['${line.id}|${dir.id}'];
+    final List<LatLng> poly;
+    if (liveRoad != null && liveRoad.length >= 2) {
+      poly = slicePolylineBetweenPoints(
+        liveRoad,
+        fromStop.position,
+        toStop.position,
+      );
+    } else if (dir.polyline.length > toIdx) {
+      poly = dir.polyline.sublist(fromIdx, toIdx + 1);
+    } else {
+      poly = <LatLng>[fromStop.position, toStop.position];
+    }
     final boardAt = ride.boardDep.estimatedTime;
     return TripLeg(
       type: TripLegType.bus,
@@ -1377,7 +1779,7 @@ class RoutePlanner {
       occupancy: ride.boardDep.occupancy,
       delaySeconds: ride.boardDep.delaySeconds,
       isAccessible:
-          line.isLowFloorDefault && fromStop.isStepFree && toStop.isStepFree,
+          line.isWheelchairAccessible && fromStop.isStepFree && toStop.isStepFree,
     );
   }
 }
@@ -1432,6 +1834,30 @@ class _RideSegment {
   final Departure boardDep;
   final DateTime alightTime;
   final int rideMinutes;
+}
+
+class _TwoTransferState {
+  const _TwoTransferState({
+    required this.leg1,
+    required this.tStop2,
+    required this.xfer1WalkMeters,
+    required this.line2,
+    required this.dir2,
+    required this.tIdx2,
+    required this.midStop,
+    required this.midIdx,
+    required this.ride2,
+  });
+
+  final _Leg1Arrival leg1;
+  final BusStop tStop2;
+  final double xfer1WalkMeters;
+  final BusLine line2;
+  final LineDirection dir2;
+  final int tIdx2;
+  final BusStop midStop;
+  final int midIdx;
+  final _RideSegment ride2;
 }
 
 class _Leg1Arrival {

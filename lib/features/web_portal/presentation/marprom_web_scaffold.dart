@@ -1,5 +1,6 @@
 // Responsive Marprom (Skupina JHMB Maribor) Web Portal navigation shell & footer.
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -149,27 +150,29 @@ class MarpromWebScaffold extends ConsumerWidget {
                           ],
                         ),
                       ),
-                      const SizedBox(width: 12),
-                      FilledButton.icon(
-                        style: FilledButton.styleFrom(
-                          backgroundColor: MarpromColors.marpromRed,
-                          foregroundColor: Colors.white,
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 18,
-                            vertical: 14,
+                      if (kIsWeb) ...[
+                        const SizedBox(width: 12),
+                        FilledButton.icon(
+                          style: FilledButton.styleFrom(
+                            backgroundColor: MarpromColors.marpromRed,
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 18,
+                              vertical: 14,
+                            ),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
                           ),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
+                          onPressed: () => context.go('/download'),
+                          icon: const Icon(Icons.download_for_offline_rounded),
+                          label: Text(
+                            ws.navDownload,
+                            style: const TextStyle(fontWeight: FontWeight.w700),
                           ),
                         ),
-                        onPressed: () => context.go('/download'),
-                        icon: const Icon(Icons.download_for_offline_rounded),
-                        label: Text(
-                          ws.navDownload,
-                          style: const TextStyle(fontWeight: FontWeight.w700),
-                        ),
-                      ),
-                    ] else ...[
+                      ],
+                    ] else if (kIsWeb) ...[
                       const Spacer(),
                       FilledButton.icon(
                         style: FilledButton.styleFrom(
@@ -185,7 +188,8 @@ class MarpromWebScaffold extends ConsumerWidget {
                         icon: const Icon(Icons.download_rounded, size: 18),
                         label: const Text('APK / iOS'),
                       ),
-                    ],
+                    ] else
+                      const Spacer(),
                   ],
                 ),
               ),
@@ -534,14 +538,15 @@ class _MobileWebDrawer extends StatelessWidget {
                 },
               ),
             const Divider(height: 24),
-            ListTile(
-              leading: const Icon(Icons.download_for_offline_rounded),
-              title: Text(ws.navDownload),
-              onTap: () {
-                Navigator.of(context).pop();
-                context.go('/download');
-              },
-            ),
+            if (kIsWeb)
+              ListTile(
+                leading: const Icon(Icons.download_for_offline_rounded),
+                title: Text(ws.navDownload),
+                onTap: () {
+                  Navigator.of(context).pop();
+                  context.go('/download');
+                },
+              ),
             ListTile(
               leading: const Icon(Icons.notifications_outlined),
               title: const Text('Obvestila v prometu'),
@@ -622,8 +627,8 @@ class _MarpromWebFooter extends StatelessWidget {
                     title: 'Potniki & Aplikacija',
                     links: [
                       ('Vozovnice & cenik', '/tickets'),
-                      ('Prenesi Android APK', '/download'),
-                      ('Namesti za iOS', '/download'),
+                      if (kIsWeb) ('Prenesi Android APK', '/download'),
+                      if (kIsWeb) ('Namesti za iOS', '/download'),
                       ('Prometna obvestila', '/notices'),
                     ],
                   ),

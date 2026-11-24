@@ -14,7 +14,6 @@ import 'package:m_mobilnost/core/accessibility/haptic_cues.dart';
 import 'package:m_mobilnost/core/layout/breakpoints.dart';
 import 'package:m_mobilnost/core/network/connectivity_provider.dart';
 import 'package:m_mobilnost/core/network/data_freshness.dart';
-import 'package:m_mobilnost/core/network/map_tile_provider.dart';
 import 'package:m_mobilnost/core/utils/distance.dart';
 import 'package:m_mobilnost/core/utils/geo.dart';
 import 'package:m_mobilnost/core/utils/time_format.dart';
@@ -313,7 +312,6 @@ void main() {
       container.read(favoritesProvider).manualStopId,
       FavoritesState.defaultManualStopId,
     );
-    expect(container.read(mapTileProviderProvider), isNull);
 
     final notifier = container.read(favoritesProvider.notifier);
     await notifier.toggleStop('glavni_trg');

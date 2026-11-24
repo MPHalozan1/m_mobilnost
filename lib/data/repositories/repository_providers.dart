@@ -2,8 +2,12 @@
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:m_mobilnost/core/accessibility/a11y_settings.dart';
+import 'package:m_mobilnost/core/firebase/firebase_bootstrap.dart';
+import 'package:m_mobilnost/core/firebase/firestore_transit_service.dart';
+import 'package:m_mobilnost/core/maps/google_web_views.dart';
 import 'package:m_mobilnost/core/network/connectivity_provider.dart';
 
+import '../firebase/firebase_auth_repository.dart';
 import '../mock/mock_auth_repository.dart';
 import '../mock/mock_line_repository.dart';
 import '../mock/mock_live_bus_repository.dart';
@@ -130,22 +134,34 @@ final noticeRepositoryProvider = Provider<NoticeRepository>((ref) {
   return repo;
 });
 
-/// Provides the active [AuthRepository] wired to wipe local caches on deleteAccount.
+/// Provides the active [AuthRepository] backed by Firebase Auth + Firestore (`m-mobilnost-2`)
+/// when configured, falling back safely to [MockAuthRepository] offline or in widget tests.
 final authRepositoryProvider = Provider<AuthRepository>((ref) {
   final prefs = ref.watch(sharedPreferencesProvider);
   final tickets = ref.watch(ticketRepositoryProvider);
   final timetables = ref.watch(timetableRepositoryProvider);
   final payments = ref.watch(paymentRepositoryProvider);
+  final firestoreService = ref.watch(firestoreTransitServiceProvider);
 
-  late final MockAuthRepository repo;
-  repo = MockAuthRepository(
+  Future<void> clearLocal() async {
+    await tickets.clearAllTickets();
+    await timetables.clearCache();
+    await payments.clearAll();
+    await ref.read(a11ySettingsProvider.notifier).resetAll();
+  }
+
+  if (FirebaseBootstrap.isReady && !isFlutterTestEnvironment) {
+    final repo = FirebaseAuthRepository(
+      firestoreService: firestoreService,
+      onDeleteLocalData: clearLocal,
+    );
+    ref.onDispose(repo.dispose);
+    return repo;
+  }
+
+  final repo = MockAuthRepository(
     prefs: prefs,
-    onDeleteLocalData: () async {
-      await tickets.clearAllTickets();
-      await timetables.clearCache();
-      await payments.clearAll();
-      await ref.read(a11ySettingsProvider.notifier).resetAll();
-    },
+    onDeleteLocalData: clearLocal,
   );
   ref.onDispose(repo.dispose);
   return repo;

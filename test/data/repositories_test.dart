@@ -229,7 +229,7 @@ void main() {
 
       // Sign up a 15-year-old minor and verify age helpers.
       final minor = await auth.signUp(
-        email: 'minor@maribor.test',
+        email: 'minor@gmail.com',
         password: 'pass1234',
         name: 'Luka Novak',
         dateOfBirth: DateTime(2011, 6, 1),
@@ -245,7 +245,7 @@ void main() {
       // Senior profile check.
       final senior = UserProfile(
         id: 'u_senior',
-        email: 'senior@maribor.test',
+        email: 'senior@gmail.com',
         name: 'Marija Horvat',
         dateOfBirth: DateTime(1958, 3, 10),
         createdAt: refDate,

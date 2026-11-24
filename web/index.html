@@ -6,7 +6,7 @@
   <meta charset="UTF-8">
   <meta content="IE=Edge" http-equiv="X-UA-Compatible">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="Marprom — Mestni potniški promet Maribor: vozni redi G1–G6 in P7–P19, načrtovalec poti, 3D zemljevid v živo, zasedenost avtobusov in prenos mobilne aplikacije M Mobilnost.">
+  <meta name="description" content="Marprom — Mestni potniški promet Maribor: vozni redi G1–G6 in P7–P19, načrtovalec poti s prestopi, Google Maps 3D trasa v živo, zasedenost avtobusov in prenos mobilne aplikacije M Mobilnost.">
   <meta name="theme-color" content="#C8102E">
 
   <!-- iOS meta tags & icons -->
@@ -22,84 +22,323 @@
   <link rel="manifest" href="manifest.json">
 
   <style>
-    gmp-map-3d {
+    html, body {
+      margin: 0;
+      padding: 0;
       width: 100%;
       height: 100%;
-      display: block;
+      background: #0D0B0C;
+      font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
     }
-    iframe.map-top {
+
+    @media (prefers-color-scheme: light) {
+      #marprom-web-loader {
+        --loader-bg: radial-gradient(circle at 50% 28%, #FFF5F6 0%, #F4F1F2 62%, #EAE5E6 100%);
+        --loader-fg: #1A1618;
+        --loader-muted: #5C5356;
+        --loader-road: #2B2628;
+        --loader-card: rgba(255, 255, 255, 0.86);
+        --loader-border: rgba(200, 16, 46, 0.16);
+      }
+    }
+
+    #marprom-web-loader {
+      --loader-bg: radial-gradient(circle at 50% 24%, #261217 0%, #120E10 58%, #0B090A 100%);
+      --loader-fg: #F8F4F5;
+      --loader-muted: #BEB3B7;
+      --loader-road: #1F1B1D;
+      --loader-card: rgba(28, 24, 26, 0.86);
+      --loader-border: rgba(255, 255, 255, 0.09);
+
+      position: fixed;
+      inset: 0;
+      z-index: 999999;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: var(--loader-bg);
+      color: var(--loader-fg);
+      transition: opacity 0.42s cubic-bezier(0.22, 1, 0.36, 1), transform 0.42s cubic-bezier(0.22, 1, 0.36, 1);
+      padding: 24px;
+      box-sizing: border-box;
+    }
+
+    #marprom-web-loader.fade-out {
+      opacity: 0;
+      transform: scale(1.025);
+      pointer-events: none;
+    }
+
+    .mb-loader-card {
+      width: min(460px, 100%);
+      background: var(--loader-card);
+      border: 1px solid var(--loader-border);
+      border-radius: 24px;
+      padding: 28px 24px 24px;
+      backdrop-filter: blur(18px);
+      box-shadow: 0 24px 64px rgba(0, 0, 0, 0.38);
+      text-align: center;
+    }
+
+    .mb-brand-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 14px;
+      border-radius: 999px;
+      background: rgba(200, 16, 46, 0.16);
+      border: 1px solid rgba(200, 16, 46, 0.36);
+      color: #FF6B81;
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.9px;
+      text-transform: uppercase;
+      margin-bottom: 18px;
+    }
+
+    .mb-brand-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #22C55E;
+      box-shadow: 0 0 8px #22C55E;
+      animation: mb-pulse 1.4s ease-in-out infinite;
+    }
+
+    .mb-stage {
+      position: relative;
       width: 100%;
+      height: 124px;
+      overflow: hidden;
+      border-radius: 16px;
+      background: linear-gradient(180deg, rgba(200, 16, 46, 0.08) 0%, rgba(15, 23, 42, 0.18) 100%);
+      margin-bottom: 18px;
+    }
+
+    .mb-skyline {
+      position: absolute;
+      bottom: 30px;
+      left: 0;
+      width: 200%;
+      height: 54px;
+      opacity: 0.35;
+      animation: mb-skyline-scroll 9s linear infinite;
+    }
+
+    .mb-road {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      height: 30px;
+      background: var(--loader-road);
+      border-top: 2px solid rgba(255, 255, 255, 0.12);
+    }
+
+    .mb-dashes {
+      position: absolute;
+      top: 13px;
+      left: 0;
+      width: 200%;
+      height: 3px;
+      background: repeating-linear-gradient(
+        90deg,
+        rgba(255, 255, 255, 0.65) 0 22px,
+        transparent 22px 46px
+      );
+      animation: mb-road-scroll 0.85s linear infinite;
+    }
+
+    .mb-bus-wrap {
+      position: absolute;
+      bottom: 14px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 176px;
+      height: 72px;
+      animation: mb-bus-bounce 0.75s ease-in-out infinite;
+    }
+
+    .mb-wheel {
+      transform-box: fill-box;
+      transform-origin: center;
+      animation: mb-wheel-spin 0.6s linear infinite;
+    }
+
+    .mb-title {
+      margin: 0 0 6px;
+      font-size: 20px;
+      font-weight: 900;
+      letter-spacing: -0.3px;
+      color: var(--loader-fg);
+    }
+
+    .mb-status {
+      margin: 0 0 16px;
+      font-size: 13px;
+      color: var(--loader-muted);
+      min-height: 18px;
+    }
+
+    .mb-progress-track {
+      width: 100%;
+      height: 6px;
+      border-radius: 999px;
+      background: rgba(148, 163, 184, 0.18);
+      overflow: hidden;
+    }
+
+    .mb-progress-fill {
+      width: 42%;
       height: 100%;
-      border: 0;
-      display: block;
+      border-radius: 999px;
+      background: linear-gradient(90deg, #C8102E, #FF5B73);
+      animation: mb-progress-slide 1.6s ease-in-out infinite;
+    }
+
+    @keyframes mb-road-scroll {
+      from { transform: translateX(0); }
+      to { transform: translateX(-46px); }
+    }
+
+    @keyframes mb-skyline-scroll {
+      from { transform: translateX(0); }
+      to { transform: translateX(-50%); }
+    }
+
+    @keyframes mb-bus-bounce {
+      0%, 100% { transform: translateX(-50%) translateY(0px); }
+      50% { transform: translateX(-50%) translateY(-2.5px); }
+    }
+
+    @keyframes mb-wheel-spin {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+
+    @keyframes mb-progress-slide {
+      0% { transform: translateX(-110%); width: 38%; }
+      50% { width: 58%; }
+      100% { transform: translateX(270%); width: 38%; }
+    }
+
+    @keyframes mb-pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.45; transform: scale(0.82); }
     }
   </style>
 
-  <!-- Google Maps JavaScript API with 2D & Photorealistic 3D Maps libraries -->
-  <script async src="https://maps.googleapis.com/maps/api/js?key=AIzaSyCJZoVbBxzgU4tt8Z-t4r5wxFM5eUOLdcs&v=beta&libraries=maps,maps3d,marker,geometry&loading=async"></script>
+  <!-- Google Maps JavaScript SDK (Vector Maps + Geometry + Marker) -->
+  <script async src="https://maps.googleapis.com/maps/api/js?key=AIzaSyCJZoVbBxzgU4tt8Z-t4r5wxFM5eUOLdcs&v=weekly&libraries=maps,marker,geometry&loading=async"></script>
   <script>
     window.__marpromWaitForGoogleMaps = async function() {
-      const deadline = Date.now() + 8000;
+      const deadline = Date.now() + 9000;
       while (Date.now() < deadline) {
         if (window.google && window.google.maps && window.google.maps.importLibrary) {
           return true;
         }
-        await new Promise((r) => setTimeout(r, 120));
+        await new Promise((r) => setTimeout(r, 100));
       }
       return false;
     };
 
-    window.__marpromBindPolyline = async function(el, coordsJson, strokeColor, strokeWidth) {
-      try {
-        const ready = await window.__marpromWaitForGoogleMaps();
-        if (!ready) return;
-        await window.google.maps.importLibrary('maps3d');
-        el.coordinates = JSON.parse(coordsJson);
-        if (strokeColor) el.strokeColor = strokeColor;
-        el.strokeWidth = strokeWidth || 6;
-        el.outerColor = '#FFFFFF';
-        el.outerWidth = 2;
-        el.altitudeMode = 'CLAMP_TO_GROUND';
-      } catch (e) {
-        // Ignore if maps3d library cannot load offline.
-      }
-    };
-
-    window.__marpromSyncRoadMap = async function(hostEl, payloadJson) {
+    window.__marpromSyncGoogleMap = async function(hostEl, payloadJson) {
       try {
         const payload = JSON.parse(payloadJson);
+        if (!hostEl) return;
+        hostEl.__marpromLatestPayload = payload;
+
         const ready = await window.__marpromWaitForGoogleMaps();
-        if (!ready || !hostEl) return;
+        if (!ready) return;
         const { Map, InfoWindow } = await window.google.maps.importLibrary('maps');
 
-        if (!hostEl.__marpromMapState) {
-          const map = new Map(hostEl, {
-            center: payload.center,
+        if (!hostEl.__marpromState) {
+          const mapOptions = {
+            center: payload.center || { lat: 46.5547, lng: 15.6459 },
             zoom: payload.zoom || 13.6,
+            mapId: payload.mapId || 'DEMO_MAP_ID',
+            renderingType: google.maps.RenderingType ? google.maps.RenderingType.VECTOR : undefined,
+            tilt: payload.tilt || 0,
+            heading: payload.heading || 0,
+            tiltInteractionEnabled: true,
+            headingInteractionEnabled: true,
+            mapTypeId: payload.mapTypeId || 'roadmap',
             mapTypeControl: false,
             streetViewControl: false,
             fullscreenControl: false,
             zoomControl: true,
+            rotateControl: true,
             gestureHandling: 'greedy',
-          });
-          hostEl.__marpromMapState = {
+          };
+          const map = new Map(hostEl, mapOptions);
+          const state = {
             map: map,
             polylines: [],
             markers: [],
             infoWindow: new InfoWindow(),
             lastCenterSig: '',
             lastFitSig: '',
+            pendingBounds: null,
+            pendingFitSig: '',
+            isDestroyed: false,
           };
+
+          if (typeof ResizeObserver !== 'undefined') {
+            const ro = new ResizeObserver(function() {
+              if (!hostEl.isConnected) return;
+              if (hostEl.clientWidth >= 80 && hostEl.clientHeight >= 80) {
+                google.maps.event.trigger(state.map, 'resize');
+                if (state.pendingBounds && state.lastFitSig !== state.pendingFitSig) {
+                  state.lastFitSig = state.pendingFitSig;
+                  const b = state.pendingBounds;
+                  state.pendingBounds = null;
+                  state.map.fitBounds(b, 44);
+                  google.maps.event.addListenerOnce(state.map, 'idle', function() {
+                    const z = state.map.getZoom();
+                    if (typeof z === 'number' && z > 16.2) state.map.setZoom(16.2);
+                    if (typeof z === 'number' && z < 11.2) state.map.setZoom(12.8);
+                  });
+                }
+              }
+            });
+            ro.observe(hostEl);
+            state.resizeObserver = ro;
+          }
+          hostEl.__marpromState = state;
         }
 
-        const st = hostEl.__marpromMapState;
-        const centerSig = payload.center.lat.toFixed(5) + ',' + payload.center.lng.toFixed(5) + ',' + (payload.zoom || 13.6);
-        if (!payload.fitBounds && st.lastCenterSig !== centerSig) {
-          st.map.setCenter(payload.center);
-          if (payload.zoom) st.map.setZoom(payload.zoom);
-          st.lastCenterSig = centerSig;
+        const st = hostEl.__marpromState;
+        if (payload.mapTypeId && st.map.getMapTypeId() !== payload.mapTypeId) {
+          st.map.setMapTypeId(payload.mapTypeId);
         }
 
+        // Camera control: 3D flyover mode takes precedence over static fitBounds.
+        if (payload.camera3D && payload.camera3D.active) {
+          const cam = payload.camera3D;
+          if (typeof st.map.moveCamera === 'function') {
+            st.map.moveCamera({
+              center: { lat: cam.lat, lng: cam.lng },
+              zoom: cam.zoom || 16.4,
+              tilt: typeof cam.tilt === 'number' ? cam.tilt : 60,
+              heading: typeof cam.heading === 'number' ? cam.heading : 0,
+            });
+          } else {
+            st.map.setCenter({ lat: cam.lat, lng: cam.lng });
+            st.map.setZoom(cam.zoom || 16.4);
+            st.map.setTilt(typeof cam.tilt === 'number' ? cam.tilt : 60);
+            st.map.setHeading(typeof cam.heading === 'number' ? cam.heading : 0);
+          }
+        } else {
+          if (typeof st.map.getTilt === 'function' && st.map.getTilt() !== (payload.tilt || 0)) {
+            st.map.setTilt(payload.tilt || 0);
+          }
+          if (typeof st.map.getHeading === 'function' && st.map.getHeading() !== (payload.heading || 0)) {
+            st.map.setHeading(payload.heading || 0);
+          }
+        }
+
+        // Clear old overlays and re-render polylines + markers.
         for (const p of st.polylines) p.setMap(null);
         st.polylines = [];
         for (const m of st.markers) m.setMap(null);
@@ -116,23 +355,46 @@
             allPointCount++;
           }
           const w = Number(line.strokeWidth) || 5;
-          const casing = new google.maps.Polyline({
-            path: path,
-            strokeColor: '#FFFFFF',
-            strokeOpacity: 0.92,
-            strokeWeight: w + 3,
-            zIndex: 1,
-            map: st.map,
-          });
-          const mainLine = new google.maps.Polyline({
-            path: path,
-            strokeColor: line.color || '#C8102E',
-            strokeOpacity: 0.96,
-            strokeWeight: w,
-            zIndex: 2,
-            map: st.map,
-          });
-          st.polylines.push(casing, mainLine);
+          if (line.isDashed) {
+            const dashedLine = new google.maps.Polyline({
+              path: path,
+              strokeOpacity: 0,
+              icons: [
+                {
+                  icon: {
+                    path: 'M 0,-1 0,1',
+                    strokeOpacity: 0.95,
+                    strokeColor: line.color || '#38BDF8',
+                    strokeWeight: 3.5,
+                    scale: 3.5,
+                  },
+                  offset: '0',
+                  repeat: '14px',
+                },
+              ],
+              zIndex: 3,
+              map: st.map,
+            });
+            st.polylines.push(dashedLine);
+          } else {
+            const casing = new google.maps.Polyline({
+              path: path,
+              strokeColor: '#FFFFFF',
+              strokeOpacity: 0.90,
+              strokeWeight: w + 3,
+              zIndex: 1,
+              map: st.map,
+            });
+            const mainLine = new google.maps.Polyline({
+              path: path,
+              strokeColor: line.color || '#C8102E',
+              strokeOpacity: 0.96,
+              strokeWeight: w,
+              zIndex: 2,
+              map: st.map,
+            });
+            st.polylines.push(casing, mainLine);
+          }
         }
 
         for (const mk of (payload.markers || [])) {
@@ -144,23 +406,25 @@
             const rawCode = (mk.shortLabel || (mk.label || '').split(' ')[0] || 'BUS').substring(0, 4);
             const safeCode = rawCode.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
             const bg = mk.color || '#C8102E';
-            const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="38" height="22" viewBox="0 0 38 22">' +
-              '<rect x="1" y="1" width="36" height="20" rx="7" fill="' + bg + '" stroke="#FFFFFF" stroke-width="2"/>' +
-              '<text x="19" y="15" font-family="Arial,sans-serif" font-size="11" font-weight="800" fill="#FFFFFF" text-anchor="middle">' + safeCode + '</text>' +
+            const a11yMark = mk.isAccessible ? '&#9855;' : '';
+            const w = mk.isAccessible ? 48 : 40;
+            const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + w + '" height="24" viewBox="0 0 ' + w + ' 24">' +
+              '<rect x="1" y="1" width="' + (w - 2) + '" height="22" rx="8" fill="' + bg + '" stroke="#FFFFFF" stroke-width="2"/>' +
+              '<text x="' + (w / 2) + '" y="16" font-family="Arial,sans-serif" font-size="11" font-weight="800" fill="#FFFFFF" text-anchor="middle">' + safeCode + (a11yMark ? ' ' + a11yMark : '') + '</text>' +
               '</svg>';
             icon = {
               url: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(svg),
-              scaledSize: new google.maps.Size(38, 22),
-              anchor: new google.maps.Point(19, 11),
+              scaledSize: new google.maps.Size(w, 24),
+              anchor: new google.maps.Point(w / 2, 12),
             };
           } else {
             icon = {
               path: google.maps.SymbolPath.CIRCLE,
-              scale: 5.5,
+              scale: 6.0,
               fillColor: '#FFFFFF',
               fillOpacity: 1.0,
               strokeColor: mk.color || '#C8102E',
-              strokeWeight: 2.5,
+              strokeWeight: 2.8,
             };
           }
           const markerObj = new google.maps.Marker({
@@ -168,28 +432,138 @@
             map: st.map,
             title: mk.label || '',
             icon: icon,
-            zIndex: mk.isBus ? 20 : 10,
+            zIndex: mk.isBus ? 25 : 10,
           });
           markerObj.addListener('click', function() {
             if (mk.label) {
-              st.infoWindow.setContent('<div style="font-weight:600;color:#0F172A;padding:2px 4px">' + String(mk.label).replace(/</g, '&lt;') + '</div>');
+              st.infoWindow.setContent('<div style="font-weight:700;color:#0F172A;padding:3px 6px;font-size:13px">' + String(mk.label).replace(/</g, '&lt;') + '</div>');
               st.infoWindow.open(st.map, markerObj);
             }
           });
           st.markers.push(markerObj);
         }
 
-        if (payload.fitBounds && allPointCount >= 2 && st.lastFitSig !== payload.fitSignature) {
-          st.map.fitBounds(bounds, 36);
-          st.lastFitSig = payload.fitSignature;
+        if (!(payload.camera3D && payload.camera3D.active)) {
+          if (payload.fitBounds && allPointCount >= 2) {
+            if (st.lastFitSig !== payload.fitSignature) {
+              if (hostEl.clientWidth >= 80 && hostEl.clientHeight >= 80) {
+                st.lastFitSig = payload.fitSignature;
+                st.pendingBounds = null;
+                st.map.fitBounds(bounds, 44);
+                google.maps.event.addListenerOnce(st.map, 'idle', function() {
+                  const z = st.map.getZoom();
+                  if (typeof z === 'number' && z > 16.2) st.map.setZoom(16.2);
+                  if (typeof z === 'number' && z < 11.2) st.map.setZoom(12.8);
+                });
+              } else {
+                st.pendingBounds = bounds;
+                st.pendingFitSig = payload.fitSignature;
+              }
+            }
+          } else if (payload.center) {
+            const centerSig = payload.center.lat.toFixed(5) + ',' + payload.center.lng.toFixed(5) + ',' + (payload.zoom || 13.6);
+            if (st.lastCenterSig !== centerSig) {
+              st.map.setCenter(payload.center);
+              if (payload.zoom) st.map.setZoom(payload.zoom);
+              st.lastCenterSig = centerSig;
+            }
+          }
         }
       } catch (e) {
-        // Ignore gracefully when Maps API cannot load offline.
+        // Ignore gracefully when Maps JS API cannot load offline.
       }
     };
   </script>
 </head>
 <body>
+  <!-- Web-Only Instant Animated Maribor Bus Loading Screen (hidden immediately once Flutter renders) -->
+  <div id="marprom-web-loader" role="status" aria-live="polite" aria-label="Nalaganje M-Mobilnost Maribor">
+    <div class="mb-loader-card">
+      <div class="mb-brand-pill">
+        <span class="mb-brand-dot"></span>
+        <span>MARPROM • M-MOBILNOST MARIBOR</span>
+      </div>
+      <div class="mb-stage" aria-hidden="true">
+        <svg class="mb-skyline" viewBox="0 0 800 60" preserveAspectRatio="none">
+          <path fill="currentColor" d="M0,60 L0,36 L35,36 L35,22 L62,22 L62,40 L92,40 L92,16 L128,16 L128,42 L170,42 L170,26 L210,26 L210,38 L260,38 L260,18 L305,18 L305,34 L350,34 L350,24 L400,24 L400,36 L435,36 L435,22 L462,22 L462,40 L492,40 L492,16 L528,16 L528,42 L570,42 L570,26 L610,26 L610,38 L660,38 L660,18 L705,18 L705,34 L750,34 L750,24 L800,24 L800,60 Z"/>
+        </svg>
+        <div class="mb-road">
+          <div class="mb-dashes"></div>
+        </div>
+        <div class="mb-bus-wrap">
+          <svg viewBox="0 0 180 74" width="176" height="72">
+            <!-- Chassis shadow -->
+            <ellipse cx="90" cy="64" rx="76" ry="5" fill="rgba(0,0,0,0.42)"/>
+            <!-- Bus body -->
+            <rect x="10" y="10" width="154" height="46" rx="11" fill="#C8102E" stroke="#FFFFFF" stroke-width="2"/>
+            <!-- White roof stripe -->
+            <path d="M18 11 H154 Q163 11 163 18 H11 Q11 11 18 11 Z" fill="#F8FAFC"/>
+            <!-- Windows -->
+            <rect x="18" y="19" width="24" height="17" rx="3" fill="#0F172A"/>
+            <rect x="46" y="19" width="26" height="17" rx="3" fill="#0F172A"/>
+            <rect x="76" y="19" width="26" height="17" rx="3" fill="#0F172A"/>
+            <rect x="106" y="19" width="26" height="17" rx="3" fill="#0F172A"/>
+            <!-- Windshield -->
+            <path d="M136 19 H156 Q161 19 161 25 V38 H136 Z" fill="#38BDF8" opacity="0.88"/>
+            <!-- Marprom stripe & electric accent -->
+            <rect x="12" y="42" width="150" height="4" fill="#FFFFFF" opacity="0.88"/>
+            <!-- Headlight glow -->
+            <circle cx="161" cy="49" r="3" fill="#FDE047"/>
+            <polygon points="164,47 179,43 179,55 164,51" fill="#FDE047" opacity="0.28"/>
+            <!-- Front & Rear Wheels -->
+            <g class="mb-wheel">
+              <circle cx="44" cy="56" r="10.5" fill="#111827" stroke="#E2E8F0" stroke-width="2.2"/>
+              <circle cx="44" cy="56" r="4" fill="#94A3B8"/>
+              <line x1="44" y1="47" x2="44" y2="65" stroke="#CBD5E1" stroke-width="1.6"/>
+              <line x1="35" y1="56" x2="53" y2="56" stroke="#CBD5E1" stroke-width="1.6"/>
+            </g>
+            <g class="mb-wheel">
+              <circle cx="132" cy="56" r="10.5" fill="#111827" stroke="#E2E8F0" stroke-width="2.2"/>
+              <circle cx="132" cy="56" r="4" fill="#94A3B8"/>
+              <line x1="132" y1="47" x2="132" y2="65" stroke="#CBD5E1" stroke-width="1.6"/>
+              <line x1="123" y1="56" x2="141" y2="56" stroke="#CBD5E1" stroke-width="1.6"/>
+            </g>
+          </svg>
+        </div>
+      </div>
+      <h1 class="mb-title">M-Mobilnost Maribor</h1>
+      <p class="mb-status" id="mb-loader-status">Nalaganje Google Zemljevidov in linij G1–P19...</p>
+      <div class="mb-progress-track">
+        <div class="mb-progress-fill"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (function() {
+      var loader = document.getElementById('marprom-web-loader');
+      var statusEl = document.getElementById('mb-loader-status');
+      var dismissed = false;
+
+      function dismissLoader() {
+        if (dismissed || !loader) return;
+        dismissed = true;
+        loader.classList.add('fade-out');
+        setTimeout(function() {
+          if (loader && loader.parentNode) loader.parentNode.removeChild(loader);
+        }, 460);
+      }
+
+      window.addEventListener('flutter-first-frame', function() {
+        if (statusEl) statusEl.textContent = 'Pripravljeno!';
+        dismissLoader();
+      });
+
+      setTimeout(function() {
+        if (!dismissed && statusEl) {
+          statusEl.textContent = 'Povezovanje s storitvijo Firebase in Marprom trasami...';
+        }
+      }, 2200);
+
+      // Failsafe dismissal if flutter-first-frame is delayed on slow connections.
+      setTimeout(dismissLoader, 16000);
+    })();
+  </script>
   <script src="flutter_bootstrap.js" async></script>
 </body>
 </html>

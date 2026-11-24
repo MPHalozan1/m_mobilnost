@@ -166,6 +166,35 @@ class TripOptionCard extends StatelessWidget {
                         label: l10n.stopAmenityStepFree,
                         compact: true,
                       ),
+                    for (final xfer in option.transfers)
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 5,
+                        ),
+                        decoration: BoxDecoration(
+                          color: (xfer.isTight
+                                  ? statusColors.warningBg
+                                  : scheme.secondaryContainer)
+                              .withValues(alpha: 0.7),
+                          borderRadius: BorderRadius.circular(999),
+                          border: Border.all(
+                            color: xfer.isTight
+                                ? statusColors.warningFg
+                                : scheme.outlineVariant,
+                          ),
+                        ),
+                        child: Text(
+                          '${xfer.fromLineCode} → ${xfer.toLineCode} • '
+                          '${xfer.alightingStopName} (${xfer.waitMinutes} min)',
+                          style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                                fontWeight: FontWeight.w700,
+                                color: xfer.isTight
+                                    ? statusColors.warningFg
+                                    : scheme.onSecondaryContainer,
+                              ),
+                        ),
+                      ),
                   ],
                 ),
                 const SizedBox(height: 8),

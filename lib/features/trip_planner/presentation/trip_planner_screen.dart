@@ -57,6 +57,7 @@ class _TripPlannerScreenState extends ConsumerState<TripPlannerScreen> {
   DateTime _targetTime = DateTime.now();
   bool _accessibleOnly = false;
   bool _fewerTransfers = false;
+  TripSortMode _sortMode = TripSortMode.fastest;
   double _maxWalkMeters = RoutePlanner.defaultMaxWalkMeters;
 
   bool _initializing = true;
@@ -119,6 +120,7 @@ class _TripPlannerScreenState extends ConsumerState<TripPlannerScreen> {
       _stopsById = {for (final s in stops) s.id: s};
       _fromEndpoint = origin;
       _toEndpoint = dest;
+      _accessibleOnly = settings.wheelchairAccessibleOnly;
       _initializing = false;
     });
 
@@ -284,6 +286,7 @@ class _TripPlannerScreenState extends ConsumerState<TripPlannerScreen> {
         targetTime: effectiveTarget,
         accessibleOnly: _accessibleOnly,
         fewerTransfers: _fewerTransfers,
+        sortMode: _sortMode,
         maxWalkMeters: _maxWalkMeters,
       );
       final googleSummary = await googleFuture;
@@ -624,11 +627,54 @@ class _TripPlannerScreenState extends ConsumerState<TripPlannerScreen> {
               secondary: const Icon(Icons.transfer_within_a_station_rounded),
               value: _fewerTransfers,
               onChanged: (val) {
-                setState(() => _fewerTransfers = val);
+                setState(() {
+                  _fewerTransfers = val;
+                  _sortMode = val
+                      ? TripSortMode.fewestTransfers
+                      : TripSortMode.fastest;
+                });
                 if (_toEndpoint != null && _hasSearched) {
                   _findRoutes();
                 }
               },
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                ChoiceChip(
+                  avatar: const Icon(Icons.bolt_rounded, size: 16),
+                  label: const Text('Najhitrejša'),
+                  selected: _sortMode == TripSortMode.fastest,
+                  onSelected: (_) {
+                    setState(() {
+                      _sortMode = TripSortMode.fastest;
+                      _fewerTransfers = false;
+                    });
+                    if (_toEndpoint != null && _hasSearched) {
+                      _findRoutes();
+                    }
+                  },
+                ),
+                ChoiceChip(
+                  avatar: const Icon(
+                    Icons.transfer_within_a_station_rounded,
+                    size: 16,
+                  ),
+                  label: const Text('Najmanj prestopov'),
+                  selected: _sortMode == TripSortMode.fewestTransfers,
+                  onSelected: (_) {
+                    setState(() {
+                      _sortMode = TripSortMode.fewestTransfers;
+                      _fewerTransfers = true;
+                    });
+                    if (_toEndpoint != null && _hasSearched) {
+                      _findRoutes();
+                    }
+                  },
+                ),
+              ],
             ),
             const SizedBox(height: 12),
             BigButton(

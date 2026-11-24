@@ -1,20 +1,17 @@
 // Unit and widget tests for the 19-line Marprom network, 7-day schedules,
 // Google Maps Embed / Routes API v2, exact passenger stats, and the 6-page Web Portal.
 
-import 'dart:typed_data';
-
 import 'package:flutter/material.dart';
-import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:m_mobilnost/app/app.dart';
 import 'package:m_mobilnost/core/accessibility/a11y_settings.dart';
+import 'package:m_mobilnost/core/config/download_links.dart';
 import 'package:m_mobilnost/core/maps/full_screen_transit_map.dart';
 import 'package:m_mobilnost/core/maps/google_maps_config.dart';
 import 'package:m_mobilnost/core/network/connectivity_provider.dart';
 import 'package:m_mobilnost/core/network/google_routes_service.dart';
-import 'package:m_mobilnost/core/network/map_tile_provider.dart';
 import 'package:m_mobilnost/core/network/route_geometry_service.dart';
 import 'package:m_mobilnost/data/repositories/repository_providers.dart';
 import 'package:m_mobilnost/data/seed/seed_lines.dart';
@@ -33,24 +30,6 @@ import 'package:m_mobilnost/features/web_portal/presentation/pages/web_tickets_p
 import 'package:m_mobilnost/l10n/app_localizations.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-
-final Uint8List _transparentTileBytes = Uint8List.fromList(<int>[
-  0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
-  0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
-  0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
-  0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,
-  0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41,
-  0x54, 0x78, 0x9C, 0x63, 0x00, 0x01, 0x00, 0x00,
-  0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00,
-  0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE,
-  0x42, 0x60, 0x82,
-]);
-
-class _MemoryTileProvider extends TileProvider {
-  @override
-  ImageProvider getImage(TileCoordinates coordinates, TileLayer options) =>
-      MemoryImage(_transparentTileBytes);
-}
 
 class _CountingFakeGoogleRoutesService extends GoogleRoutesService {
   int callCount = 0;
@@ -168,21 +147,14 @@ void main() {
     });
   });
 
-  group('Google Maps Embed & Routes API v2', () {
-    test('buildDirectionsEmbedUri encodes origin, destination, mode, and avoid flags', () {
-      final uri = GoogleMapsConfig.buildDirectionsEmbedUri(
-        origin: 'Oslo Norway',
-        destination: 'Telemark Norway',
-        mode: 'driving',
-        avoidTolls: true,
-        avoidHighways: true,
+  group('Google Maps Vector Config & Routes API v2', () {
+    test('GoogleMapsConfig configures Map ID & APK release URL points to GitHub v2.0', () {
+      expect(GoogleMapsConfig.webApiKey, isNotEmpty);
+      expect(GoogleMapsConfig.vectorMapId, isNotEmpty);
+      expect(
+        marpromAndroidApkUri.toString(),
+        'https://github.com/MPHalozan1/m_mobilnost/releases/download/v2.0/m-mobilnost.apk',
       );
-      expect(uri.host, 'www.google.com');
-      expect(uri.path, '/maps/embed/v1/directions');
-      expect(uri.queryParameters['key'], GoogleMapsConfig.webApiKey);
-      expect(uri.queryParameters['origin'], 'Oslo Norway');
-      expect(uri.queryParameters['destination'], 'Telemark Norway');
-      expect(uri.queryParameters['avoid'], 'tolls|highways');
     });
 
     test('parseComputeRoutesResponse parses exact sample JSON and decodes polylines', () {
@@ -349,7 +321,7 @@ void main() {
       expect(find.text('Sobota'), findsOneWidget);
       expect(find.text('Nedelja / Praznik'), findsOneWidget);
 
-      // 2. Route Planner page with Routes API card + Directions Embed card
+      // 2. Route Planner page with Routes API card + Vector 2D/3D Map
       await tester.pumpWidget(
         _wrapWebPage(
           container,
@@ -358,7 +330,7 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(find.text('Google Routes API v2 (computeRoutes)'), findsOneWidget);
-      expect(find.byKey(const Key('google_directions_embed_card')), findsOneWidget);
+      expect(find.byKey(const Key('google_map_3d_stub_preview')), findsOneWidget);
 
       // 3. Live Stats page with 3D Map & exact passenger count table
       await tester.pumpWidget(
@@ -381,7 +353,21 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('Vozovnice in cenik mestnega prometa Marprom'), findsOneWidget);
 
-      // 5. Download page with Android APK + iOS QR codes
+      // 5. Download page with Android APK + iOS QR codes (web preview) & native hide
+      await tester.pumpWidget(
+        _wrapWebPage(
+          container,
+          const Scaffold(
+            body: SingleChildScrollView(
+              child: WebDownloadPage(forceWebPreview: true),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Prenesi m-mobilnost.apk'), findsOneWidget);
+      expect(find.byType(QrImageView), findsNWidgets(2));
+
       await tester.pumpWidget(
         _wrapWebPage(
           container,
@@ -389,8 +375,7 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      expect(find.text('Prenesi m-mobilnost.apk'), findsOneWidget);
-      expect(find.byType(QrImageView), findsNWidgets(2));
+      expect(find.text('Prenesi m-mobilnost.apk'), findsNothing);
     });
 
     testWidgets('Mobile MapScreen expands into FullScreenTransitMapPage and closes cleanly', (tester) async {
@@ -407,7 +392,6 @@ void main() {
         overrides: [
           sharedPreferencesProvider.overrideWithValue(prefs),
           isOfflineProvider.overrideWithValue(false),
-          mapTileProviderProvider.overrideWithValue(_MemoryTileProvider()),
           liveBusesStreamProvider.overrideWith((ref) => Stream.value(const [])),
           locationServiceProvider.overrideWithValue(
             LocationService(gpsProbe: () async => null),

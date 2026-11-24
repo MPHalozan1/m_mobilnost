@@ -1,7 +1,6 @@
 // Interactive Marprom 7-day-of-week timetable portal for all 19 lines (G1-G6 & P7-P19).
 
 import 'package:flutter/material.dart';
-import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
@@ -13,6 +12,7 @@ import '../../../../core/maps/google_web_views.dart';
 import '../../../../core/network/route_geometry_service.dart';
 import '../../../../core/theme/colors.dart';
 import '../../../../core/utils/geo.dart';
+import '../../../../core/widgets/bus_occupancy_cutaway.dart';
 import '../../../../data/models/bus_line.dart';
 import '../../../../data/models/bus_position.dart';
 import '../../../../data/repositories/repository_providers.dart';
@@ -37,6 +37,7 @@ class WebSchedulesPage extends ConsumerStatefulWidget {
 class _WebSchedulesPageState extends ConsumerState<WebSchedulesPage> {
   String _searchQuery = '';
   int _groupFilter = 0; // 0: All 19, 1: G1-G6, 2: P7-P19
+  bool _accessibleOnly = false;
   late String _selectedLineId;
   int _directionIndex = 0;
   int _selectedWeekday = DateTime.now().weekday;
@@ -45,6 +46,7 @@ class _WebSchedulesPageState extends ConsumerState<WebSchedulesPage> {
   @override
   void initState() {
     super.initState();
+    _accessibleOnly = ref.read(a11ySettingsProvider).wheelchairAccessibleOnly;
     final initial = widget.initialLineId != null
         ? seedLinesById[widget.initialLineId!]
         : null;
@@ -89,6 +91,7 @@ class _WebSchedulesPageState extends ConsumerState<WebSchedulesPage> {
     final filteredLines = seedLines.where((line) {
       if (_groupFilter == 1 && !line.isMainTrunk) return false;
       if (_groupFilter == 2 && line.isMainTrunk) return false;
+      if (_accessibleOnly && !line.isWheelchairAccessible) return false;
       if (_searchQuery.trim().isNotEmpty) {
         final q = _searchQuery.trim().toLowerCase();
         return line.code.toLowerCase().contains(q) ||
@@ -223,6 +226,16 @@ class _WebSchedulesPageState extends ConsumerState<WebSchedulesPage> {
                                   selected: _groupFilter == 2,
                                   onSelected: (_) =>
                                       setState(() => _groupFilter = 2),
+                                ),
+                                FilterChip(
+                                  avatar: const Icon(
+                                    Icons.accessible_rounded,
+                                    size: 16,
+                                  ),
+                                  label: const Text('Dostopne'),
+                                  selected: _accessibleOnly,
+                                  onSelected: (v) =>
+                                      setState(() => _accessibleOnly = v),
                                 ),
                               ],
                             ),
@@ -646,6 +659,9 @@ class _WebSchedulesPageState extends ConsumerState<WebSchedulesPage> {
                                         label:
                                             '${bus.lineCode} • ${bus.passengerCount}/${bus.vehicleCapacity} ${ws.passengersWord} → ${bus.nextStopName}',
                                         isBus: true,
+                                        isWheelchairAccessible:
+                                            bus.isWheelchairAccessible,
+                                        headingDegrees: bus.headingDegrees,
                                         color: activeLine.color,
                                       ),
                                     for (final stopId in direction.stopIds)
@@ -656,47 +672,10 @@ class _WebSchedulesPageState extends ConsumerState<WebSchedulesPage> {
                                               seedStopsById[stopId]!.position,
                                           label: seedStopsById[stopId]!.name,
                                           isBus: false,
+                                          isWheelchairAccessible:
+                                              seedStopsById[stopId]!.isStepFree,
                                           color: activeLine.color,
                                         ),
-                                  ],
-                                  polylines2D: [
-                                    if (routePoints.length >= 2)
-                                      Polyline(
-                                        points: routePoints,
-                                        color: activeLine.color,
-                                        strokeWidth: 5.5,
-                                        borderColor: Colors.white,
-                                        borderStrokeWidth: 1.5,
-                                      ),
-                                  ],
-                                  markers2D: [
-                                    for (final bus in busesOnDirection)
-                                      Marker(
-                                        point: bus.position,
-                                        width: 82,
-                                        height: 36,
-                                        child: Container(
-                                          alignment: Alignment.center,
-                                          decoration: BoxDecoration(
-                                            color: activeLine.color,
-                                            borderRadius: BorderRadius.circular(
-                                              10,
-                                            ),
-                                            border: Border.all(
-                                              color: Colors.white,
-                                              width: 2,
-                                            ),
-                                          ),
-                                          child: Text(
-                                            '${bus.lineCode} • ${bus.passengerCount}',
-                                            style: const TextStyle(
-                                              color: Colors.white,
-                                              fontSize: 11,
-                                              fontWeight: FontWeight.w800,
-                                            ),
-                                          ),
-                                        ),
-                                      ),
                                   ],
                                   onFullScreenToggle: () =>
                                       openFullScreenTransitMap(
@@ -706,6 +685,14 @@ class _WebSchedulesPageState extends ConsumerState<WebSchedulesPage> {
                                   ),
                                 ),
                               ),
+                              if (busesOnDirection.isNotEmpty)
+                                Padding(
+                                  padding: const EdgeInsets.all(16),
+                                  child: BusOccupancyCutaway.fromBusPosition(
+                                    busesOnDirection.first,
+                                    compact: true,
+                                  ),
+                                ),
                             ],
                           ),
                         ),

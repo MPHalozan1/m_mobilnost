@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $false)]
-    [string]$ProjectId = "",
+    [string]$ProjectId = "m-mobilnost-2",
     [Parameter(Mandatory = $false)]
     [string]$FirebaseApiKey = "",
     [Parameter(Mandatory = $false)]
@@ -22,10 +22,11 @@ if ($ProjectId -ne "") {
     npx -y firebase-tools@latest use $ProjectId
 }
 
-Write-Host "==> Building Android release APK..."
-flutter build apk --release
-New-Item -ItemType Directory -Force -Path "web\downloads" | Out-Null
-Copy-Item -Path "build\app\outputs\flutter-apk\app-release.apk" -Destination "web\downloads\m-mobilnost.apk" -Force
+Write-Host "==> Verifying Spark-plan binary cleanliness (no .apk/.exe/.dll/.bat in web/ or assets/)..."
+$forbidden = Get-ChildItem -Path "web", "assets" -Recurse -Include *.apk, *.exe, *.ipa, *.dll, *.bat -ErrorAction SilentlyContinue
+if ($forbidden) {
+    throw "Forbidden binaries found in web/ or assets/: $($forbidden.FullName -join ', '). Android APK is hosted via GitHub Releases v2.0."
+}
 
 $dartDefines = @()
 if ($ProjectId -ne "") { $dartDefines += "--dart-define=FIREBASE_PROJECT_ID=$ProjectId" }
@@ -35,8 +36,8 @@ if ($FirebaseSenderId -ne "") { $dartDefines += "--dart-define=FIREBASE_MESSAGIN
 if ($FirebaseAuthDomain -ne "") { $dartDefines += "--dart-define=FIREBASE_AUTH_DOMAIN=$FirebaseAuthDomain" }
 
 Write-Host "==> Building Flutter Web bundle into build/web..."
-flutter build web @dartDefines
+flutter build web --release @dartDefines
 
-Write-Host "==> Deploying Firebase Auth configuration + Firebase Hosting..."
-npx -y firebase-tools@latest deploy --only hosting,auth
+Write-Host "==> Deploying Firebase Hosting, Auth & Firestore Rules..."
+npx -y firebase-tools@latest deploy --only hosting,auth,firestore:rules --project $ProjectId
 Write-Host "==> Done!"

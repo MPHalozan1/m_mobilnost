@@ -1,0 +1,540 @@
+rules_version = '2';
+
+// ===============================================================
+// Assumed Data Model
+// ===============================================================
+//
+// This security rules file is designed for Firebase project `m-mobilnost-2`
+// (Standard `(default)` Cloud Firestore database) and assumes the following
+// data structures:
+//
+// Collection: bus_lines
+// Document ID: {lineId}
+// Read: Public (get, list)
+// Write: Authenticated seed/sync (create, update); delete denied
+// Fields:
+//   - code: string (required, 1..20 chars) - Short public line code (e.g. "G1", "6")
+//   - name: string (required, 1..150 chars) - Descriptive route name
+//   - maxCapacity: int (required, 1..120) - Maximum rated passenger capacity
+//   - isLowFloor: bool (required) - Whether vehicles on this line are low-floor
+//   - hasWheelchairRamp: bool (required) - Whether boarding ramp is available
+//   - hasWheelchairSpace: bool (required) - Whether dedicated wheelchair bay exists
+//   - hasAudioAnnouncements: bool (required) - Whether stop audio announcements work
+//   - id: string (optional, 1..64 chars, must equal lineId when present)
+//   - color: string (optional, 1..16 chars) or int
+//   - colorHex: string (optional, 1..16 chars)
+//   - isLowFloorDefault: bool (optional)
+//   - isMainTrunk: bool (optional)
+//   - directions: list (optional, max 10 items)
+//   - updatedAt: timestamp or ISO string (optional, <= 40 chars)
+//
+// Collection: stations
+// Document ID: {stationId}
+// Read: Public (get, list)
+// Write: Authenticated seed/sync (create, update); delete denied
+// Fields:
+//   - name: string (required, 1..150 chars) - Stop display name
+//   - lat: number (required, -90..90) - Latitude coordinate
+//   - lng: number (required, -180..180) - Longitude coordinate
+//   - isStepFree: bool (required) - Step-free wheelchair/stroller boarding
+//   - id: string (optional, 1..64 chars, must equal stationId when present)
+//   - lineIds: list (optional, max 50 items)
+//   - directionLabels: map (optional, max 50 entries)
+//   - platform: string or null (optional, 0..32 chars)
+//   - hasShelter: bool (optional)
+//   - hasBench: bool (optional)
+//   - hasTactile: bool (optional)
+//   - hasDigitalDisplay: bool (optional)
+//   - updatedAt: timestamp or ISO string (optional, <= 40 chars)
+//
+// Collection: active_buses
+// Document ID: {vehicleId}
+// Read: Public (get, list)
+// Write: Authenticated seed/sync (create, update); delete denied
+// Fields:
+//   - lineId: string (required, 1..64 chars) - Bus line identifier
+//   - passengerCount: int (required, 0..120, <= vehicleCapacity)
+//   - vehicleCapacity: int (required, 1..120)
+//   - isLowFloor: bool (required)
+//   - hasWheelchairRamp: bool (required)
+//   - hasWheelchairSpace: bool (required)
+//   - vehicleId: string (optional, 1..64 chars, must equal document vehicleId when present)
+//   - lineCode: string (optional, 1..20 chars)
+//   - directionId: string (optional, 1..64 chars)
+//   - directionName: string (optional, 1..150 chars)
+//   - lat: number (optional, -90..90)
+//   - lng: number (optional, -180..180)
+//   - progress: number (optional, 0..1)
+//   - speedKmh: number (optional, 0..150)
+//   - nextStopId: string (optional, 1..64 chars)
+//   - nextStopName: string (optional, 1..150 chars)
+//   - remainingStopsCount: int (optional, 0..200)
+//   - etaToNextStopSeconds: int (optional, 0..86400)
+//   - delaySeconds: int (optional, -3600..14400)
+//   - occupancy: string (optional, 1..32 chars)
+//   - loadPercent: int (optional, 0..100)
+//   - vehicleModel: string (optional, 1..100 chars)
+//   - isElectric: bool (optional)
+//   - updatedAt: timestamp or ISO string (optional, <= 40 chars)
+//
+// Collection: users
+// Document ID: {userId}
+// Read: Owner only (get only; list denied)
+// Write: Owner only (create, update, delete)
+// Fields:
+//   - email: string (required, 3..254 chars, valid email format)
+//   - uid: string (optional, immutable, must equal userId when present)
+//   - id: string (optional, immutable, must equal userId when present)
+//   - name: string (optional, 1..100 chars)
+//   - displayName: string (optional, 1..100 chars)
+//   - dateOfBirth: timestamp, ISO string (<= 40 chars), or null (optional)
+//   - preferredLocaleCode: string (optional, in ['sl', 'en', 'de', 'sr', 'sr_Latn'])
+//   - guardianConfirmed: bool (optional)
+//   - photoUrl: string (https/http URL, <= 512 chars) or null (optional)
+//   - authProvider: string (optional, in ['email', 'google', 'anonymous'])
+//   - createdAt: timestamp or ISO string (optional, immutable, <= 40 chars)
+//   - updatedAt: timestamp or ISO string (optional, <= 40 chars)
+// Forbidden fields: password, passwordHash, plainPassword, secret, salt
+//
+// Collection: saved_routes
+// Document ID: {routeId}
+// Read: Owner only (resource.data.userId == request.auth.uid)
+// Write: Owner only (create, update, delete); userId immutable after creation
+// Fields:
+//   - userId: string (required, immutable, 1..128 chars, == request.auth.uid)
+//   - originName: string (required, 1..150 chars)
+//   - destinationName: string (required, 1..150 chars)
+//   - id: string (optional, 1..64 chars, must equal routeId when present)
+//   - originStopId: string (optional, 1..64 chars)
+//   - destinationStopId: string (optional, 1..64 chars)
+//   - originLat: number (optional, -90..90)
+//   - originLng: number (optional, -180..180)
+//   - destinationLat: number (optional, -90..90)
+//   - destinationLng: number (optional, -180..180)
+//   - lineIds: list (optional, max 20 items)
+//   - label: string (optional, 1..100 chars)
+//   - isFavorite: bool (optional)
+//   - accessibleOnly: bool (optional)
+//   - createdAt: timestamp or ISO string (optional, immutable, <= 40 chars)
+//   - updatedAt: timestamp or ISO string (optional, <= 40 chars)
+//
+// Collection: occupancy_reports
+// Document ID: {reportId}
+// Read: Public (get, list)
+// Write: Authenticated create only; immutable (update, delete denied)
+// Fields:
+//   - userId: string (required, 1..128 chars, == request.auth.uid)
+//   - lineId: string (required, 1..64 chars)
+//   - reportedLoadPercent: int (required, 0..100)
+//   - vehicleId: string (optional, 1..64 chars)
+//   - directionId: string (optional, 1..64 chars)
+//   - stopId: string (optional, 1..64 chars)
+//   - occupancyLevel: string (optional, 1..32 chars)
+//   - comment: string (optional, 0..280 chars)
+//   - createdAt: timestamp or ISO string (optional, <= 40 chars)
+//
+// ===============================================================
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+
+    // Check if the user is authenticated
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // Check if authenticated user owns the document path
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // Verify UID hasn't been tampered with on create
+    function uidUnchanged() {
+      return !('uid' in request.resource.data) ||
+             request.resource.data.uid == request.auth.uid;
+    }
+
+    // Ensure uid field is not modified on update
+    function uidNotModified() {
+      return !('uid' in request.resource.data) ||
+             !('uid' in resource.data) ||
+             request.resource.data.uid == resource.data.uid;
+    }
+
+    // Validate required fields exist
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+
+    // Validate document contains only allowed fields
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    // Validate string length bounds
+    function validStringLength(field, minLen, maxLen) {
+      return request.resource.data[field] is string &&
+             request.resource.data[field].size() >= minLen &&
+             request.resource.data[field].size() <= maxLen;
+    }
+
+    // Validate optional string length bounds when present
+    function isValidOptionalString(field, minLen, maxLen) {
+      return !(field in request.resource.data) ||
+             (request.resource.data[field] is string &&
+              request.resource.data[field].size() >= minLen &&
+              request.resource.data[field].size() <= maxLen);
+    }
+
+    // Validate optional boolean when present
+    function isValidOptionalBool(field) {
+      return !(field in request.resource.data) ||
+             request.resource.data[field] is bool;
+    }
+
+    // Validate optional timestamp or bounded ISO date string when present
+    function isValidOptionalTimestampOrDateStr(field) {
+      return !(field in request.resource.data) ||
+             request.resource.data[field] is timestamp ||
+             (request.resource.data[field] is string &&
+              request.resource.data[field].size() > 0 &&
+              request.resource.data[field].size() <= 40);
+    }
+
+    // Validate URL format (https:// or http://)
+    function isValidUrl(url) {
+      return url is string &&
+             url.size() <= 512 &&
+             (url.matches("^https://.*") || url.matches("^http://.*"));
+    }
+
+    // Validate email format
+    function isValidEmail(email) {
+      return email is string &&
+             email.size() >= 3 &&
+             email.size() <= 254 &&
+             email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    // Validate list type and max length
+    function isValidList(list, maxSize) {
+      return list is list && list.size() <= maxSize;
+    }
+
+    // Validate immutable fields have not changed on update (when present before)
+    function areImmutableFieldsUnchanged(fields) {
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny(fields);
+    }
+
+    // ===============================================================
+    // Domain Validators (Used in BOTH create and update)
+    // ===============================================================
+
+    function isValidBusLine(data, lineId) {
+      return hasRequiredFields([
+               'code',
+               'name',
+               'maxCapacity',
+               'isLowFloor',
+               'hasWheelchairRamp',
+               'hasWheelchairSpace',
+               'hasAudioAnnouncements'
+             ]) &&
+             hasOnlyAllowedFields([
+               'id',
+               'code',
+               'name',
+               'maxCapacity',
+               'isLowFloor',
+               'isLowFloorDefault',
+               'hasWheelchairRamp',
+               'hasWheelchairSpace',
+               'hasAudioAnnouncements',
+               'isMainTrunk',
+               'color',
+               'colorHex',
+               'directions',
+               'updatedAt'
+             ]) &&
+             validStringLength('code', 1, 20) &&
+             validStringLength('name', 1, 150) &&
+             data.maxCapacity is int &&
+             data.maxCapacity > 0 &&
+             data.maxCapacity <= 120 &&
+             data.isLowFloor is bool &&
+             data.hasWheelchairRamp is bool &&
+             data.hasWheelchairSpace is bool &&
+             data.hasAudioAnnouncements is bool &&
+             (!('id' in data) || (data.id is string && data.id == lineId && data.id.size() <= 64)) &&
+             isValidOptionalBool('isLowFloorDefault') &&
+             isValidOptionalBool('isMainTrunk') &&
+             (!('color' in data) || (data.color is int) || (data.color is string && data.color.size() >= 1 && data.color.size() <= 16)) &&
+             isValidOptionalString('colorHex', 1, 16) &&
+             (!('directions' in data) || isValidList(data.directions, 10)) &&
+             isValidOptionalTimestampOrDateStr('updatedAt');
+    }
+
+    function isValidStation(data, stationId) {
+      return hasRequiredFields(['name', 'lat', 'lng', 'isStepFree']) &&
+             hasOnlyAllowedFields([
+               'id',
+               'name',
+               'lat',
+               'lng',
+               'isStepFree',
+               'lineIds',
+               'directionLabels',
+               'platform',
+               'hasShelter',
+               'hasBench',
+               'hasTactile',
+               'hasDigitalDisplay',
+               'updatedAt'
+             ]) &&
+             validStringLength('name', 1, 150) &&
+             data.lat is number && data.lat >= -90 && data.lat <= 90 &&
+             data.lng is number && data.lng >= -180 && data.lng <= 180 &&
+             data.isStepFree is bool &&
+             (!('id' in data) || (data.id is string && data.id == stationId && data.id.size() <= 64)) &&
+             (!('lineIds' in data) || isValidList(data.lineIds, 50)) &&
+             (!('directionLabels' in data) || (data.directionLabels is map && data.directionLabels.size() <= 50)) &&
+             (!('platform' in data) || data.platform == null || (data.platform is string && data.platform.size() <= 32)) &&
+             isValidOptionalBool('hasShelter') &&
+             isValidOptionalBool('hasBench') &&
+             isValidOptionalBool('hasTactile') &&
+             isValidOptionalBool('hasDigitalDisplay') &&
+             isValidOptionalTimestampOrDateStr('updatedAt');
+    }
+
+    function isValidActiveBus(data, vehicleId) {
+      return hasRequiredFields([
+               'lineId',
+               'passengerCount',
+               'vehicleCapacity',
+               'isLowFloor',
+               'hasWheelchairRamp',
+               'hasWheelchairSpace'
+             ]) &&
+             hasOnlyAllowedFields([
+               'vehicleId',
+               'lineId',
+               'lineCode',
+               'directionId',
+               'directionName',
+               'lat',
+               'lng',
+               'progress',
+               'speedKmh',
+               'nextStopId',
+               'nextStopName',
+               'remainingStopsCount',
+               'etaToNextStopSeconds',
+               'delaySeconds',
+               'occupancy',
+               'passengerCount',
+               'vehicleCapacity',
+               'loadPercent',
+               'vehicleModel',
+               'isElectric',
+               'isLowFloor',
+               'hasWheelchairRamp',
+               'hasWheelchairSpace',
+               'updatedAt'
+             ]) &&
+             validStringLength('lineId', 1, 64) &&
+             data.passengerCount is int &&
+             data.passengerCount >= 0 &&
+             data.passengerCount <= 120 &&
+             data.vehicleCapacity is int &&
+             data.vehicleCapacity > 0 &&
+             data.vehicleCapacity <= 120 &&
+             data.passengerCount <= data.vehicleCapacity &&
+             data.isLowFloor is bool &&
+             data.hasWheelchairRamp is bool &&
+             data.hasWheelchairSpace is bool &&
+             (!('vehicleId' in data) || (data.vehicleId is string && data.vehicleId == vehicleId && data.vehicleId.size() <= 64)) &&
+             isValidOptionalString('lineCode', 1, 20) &&
+             isValidOptionalString('directionId', 1, 64) &&
+             isValidOptionalString('directionName', 1, 150) &&
+             (!('lat' in data) || (data.lat is number && data.lat >= -90 && data.lat <= 90)) &&
+             (!('lng' in data) || (data.lng is number && data.lng >= -180 && data.lng <= 180)) &&
+             (!('progress' in data) || (data.progress is number && data.progress >= 0 && data.progress <= 1)) &&
+             (!('speedKmh' in data) || (data.speedKmh is number && data.speedKmh >= 0 && data.speedKmh <= 150)) &&
+             isValidOptionalString('nextStopId', 1, 64) &&
+             isValidOptionalString('nextStopName', 1, 150) &&
+             (!('remainingStopsCount' in data) || (data.remainingStopsCount is int && data.remainingStopsCount >= 0 && data.remainingStopsCount <= 200)) &&
+             (!('etaToNextStopSeconds' in data) || (data.etaToNextStopSeconds is int && data.etaToNextStopSeconds >= 0 && data.etaToNextStopSeconds <= 86400)) &&
+             (!('delaySeconds' in data) || (data.delaySeconds is int && data.delaySeconds >= -3600 && data.delaySeconds <= 14400)) &&
+             isValidOptionalString('occupancy', 1, 32) &&
+             (!('loadPercent' in data) || (data.loadPercent is int && data.loadPercent >= 0 && data.loadPercent <= 100)) &&
+             isValidOptionalString('vehicleModel', 1, 100) &&
+             isValidOptionalBool('isElectric') &&
+             isValidOptionalTimestampOrDateStr('updatedAt');
+    }
+
+    function isValidUserProfile(data, userId) {
+      return !data.keys().hasAny(['password', 'passwordHash', 'plainPassword', 'secret', 'salt']) &&
+             hasRequiredFields(['email']) &&
+             hasOnlyAllowedFields([
+               'id',
+               'uid',
+               'email',
+               'name',
+               'displayName',
+               'dateOfBirth',
+               'preferredLocaleCode',
+               'guardianConfirmed',
+               'photoUrl',
+               'authProvider',
+               'createdAt',
+               'updatedAt'
+             ]) &&
+             isValidEmail(data.email) &&
+             (!('uid' in data) || (data.uid is string && data.uid == userId && data.uid.size() <= 128)) &&
+             (!('id' in data) || (data.id is string && data.id == userId && data.id.size() <= 128)) &&
+             isValidOptionalString('name', 1, 100) &&
+             isValidOptionalString('displayName', 1, 100) &&
+             (!('dateOfBirth' in data) || data.dateOfBirth == null || data.dateOfBirth is timestamp || (data.dateOfBirth is string && data.dateOfBirth.size() > 0 && data.dateOfBirth.size() <= 40)) &&
+             (!('preferredLocaleCode' in data) || (data.preferredLocaleCode is string && data.preferredLocaleCode in ['sl', 'en', 'de', 'sr', 'sr_Latn'])) &&
+             isValidOptionalBool('guardianConfirmed') &&
+             (!('photoUrl' in data) || data.photoUrl == null || isValidUrl(data.photoUrl)) &&
+             (!('authProvider' in data) || (data.authProvider is string && data.authProvider in ['email', 'google', 'anonymous'])) &&
+             isValidOptionalTimestampOrDateStr('createdAt') &&
+             isValidOptionalTimestampOrDateStr('updatedAt');
+    }
+
+    function isValidSavedRoute(data, routeId) {
+      return hasRequiredFields(['userId', 'originName', 'destinationName']) &&
+             hasOnlyAllowedFields([
+               'id',
+               'userId',
+               'originName',
+               'destinationName',
+               'originStopId',
+               'destinationStopId',
+               'originLat',
+               'originLng',
+               'destinationLat',
+               'destinationLng',
+               'lineIds',
+               'label',
+               'isFavorite',
+               'accessibleOnly',
+               'createdAt',
+               'updatedAt'
+             ]) &&
+             validStringLength('userId', 1, 128) &&
+             validStringLength('originName', 1, 150) &&
+             validStringLength('destinationName', 1, 150) &&
+             (!('id' in data) || (data.id is string && data.id == routeId && data.id.size() <= 64)) &&
+             isValidOptionalString('originStopId', 1, 64) &&
+             isValidOptionalString('destinationStopId', 1, 64) &&
+             (!('originLat' in data) || (data.originLat is number && data.originLat >= -90 && data.originLat <= 90)) &&
+             (!('originLng' in data) || (data.originLng is number && data.originLng >= -180 && data.originLng <= 180)) &&
+             (!('destinationLat' in data) || (data.destinationLat is number && data.destinationLat >= -90 && data.destinationLat <= 90)) &&
+             (!('destinationLng' in data) || (data.destinationLng is number && data.destinationLng >= -180 && data.destinationLng <= 180)) &&
+             (!('lineIds' in data) || isValidList(data.lineIds, 20)) &&
+             isValidOptionalString('label', 1, 100) &&
+             isValidOptionalBool('isFavorite') &&
+             isValidOptionalBool('accessibleOnly') &&
+             isValidOptionalTimestampOrDateStr('createdAt') &&
+             isValidOptionalTimestampOrDateStr('updatedAt');
+    }
+
+    function isValidOccupancyReport(data) {
+      return hasRequiredFields(['userId', 'lineId', 'reportedLoadPercent']) &&
+             hasOnlyAllowedFields([
+               'userId',
+               'lineId',
+               'reportedLoadPercent',
+               'vehicleId',
+               'directionId',
+               'stopId',
+               'occupancyLevel',
+               'comment',
+               'createdAt'
+             ]) &&
+             validStringLength('userId', 1, 128) &&
+             data.userId == request.auth.uid &&
+             validStringLength('lineId', 1, 64) &&
+             data.reportedLoadPercent is int &&
+             data.reportedLoadPercent >= 0 &&
+             data.reportedLoadPercent <= 100 &&
+             isValidOptionalString('vehicleId', 1, 64) &&
+             isValidOptionalString('directionId', 1, 64) &&
+             isValidOptionalString('stopId', 1, 64) &&
+             isValidOptionalString('occupancyLevel', 1, 32) &&
+             isValidOptionalString('comment', 0, 280) &&
+             isValidOptionalTimestampOrDateStr('createdAt');
+    }
+
+    // ===============================================================
+    // Collection Rules
+    // ===============================================================
+
+    // Public transit lines: public read, authenticated seed/sync with strict validation
+    match /bus_lines/{lineId} {
+      allow get, list: if true;
+      allow create, update: if isAuthenticated() && isValidBusLine(request.resource.data, lineId);
+      allow delete: if false;
+    }
+
+    // Public transit stations/stops: public read, authenticated seed/sync with strict validation
+    match /stations/{stationId} {
+      allow get, list: if true;
+      allow create, update: if isAuthenticated() && isValidStation(request.resource.data, stationId);
+      allow delete: if false;
+    }
+
+    // Live active buses: public read, authenticated telemetry sync with strict capacity bounds
+    match /active_buses/{vehicleId} {
+      allow get, list: if true;
+      allow create, update: if isAuthenticated() && isValidActiveBus(request.resource.data, vehicleId);
+      allow delete: if false;
+    }
+
+    // User profiles: strict owner-only access, no listing, no passwords or secrets stored
+    match /users/{userId} {
+      allow get: if isOwner(userId);
+      allow create: if isOwner(userId) &&
+                       uidUnchanged() &&
+                       isValidUserProfile(request.resource.data, userId);
+      allow update: if isOwner(userId) &&
+                       uidNotModified() &&
+                       isValidUserProfile(request.resource.data, userId) &&
+                       (!('id' in resource.data) || request.resource.data.id == resource.data.id) &&
+                       (!('createdAt' in resource.data) || request.resource.data.createdAt == resource.data.createdAt);
+      allow delete: if isOwner(userId);
+    }
+
+    // Saved user routes: strict owner-only read/write/delete, immutable userId
+    match /saved_routes/{routeId} {
+      allow read, delete: if isAuthenticated() && resource.data.userId == request.auth.uid;
+      allow create: if isAuthenticated() &&
+                       request.resource.data.userId == request.auth.uid &&
+                       isValidSavedRoute(request.resource.data, routeId);
+      allow update: if isAuthenticated() &&
+                       resource.data.userId == request.auth.uid &&
+                       request.resource.data.userId == request.auth.uid &&
+                       isValidSavedRoute(request.resource.data, routeId) &&
+                       areImmutableFieldsUnchanged(['userId']) &&
+                       (!('createdAt' in resource.data) || request.resource.data.createdAt == resource.data.createdAt);
+    }
+
+    // Crowdsourced occupancy reports: public read, authenticated create, immutable afterwards
+    match /occupancy_reports/{reportId} {
+      allow get, list: if true;
+      allow create: if isAuthenticated() && isValidOccupancyReport(request.resource.data);
+      allow update, delete: if false;
+    }
+
+    // Default-deny fallback for all other collections and subcollections
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

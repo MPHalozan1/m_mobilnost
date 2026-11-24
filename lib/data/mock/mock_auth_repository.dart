@@ -1,21 +1,26 @@
-// Mock AuthRepository with seeded demo user, minor/profile support, and full wipe.
+//**********************************************
+// Hardened Offline/Test AuthRepository        *
+//**********************************************
 
 import 'dart:async';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../../core/auth/email_validator.dart';
 import '../../core/firebase/firebase_bootstrap.dart';
 import '../models/user_profile.dart';
 import '../repositories/auth_repository.dart';
 import 'local_storage_helper.dart';
 
-/// Mock [AuthRepository] supporting demo login, registration, and GDPR deletion.
+/// Offline/test [AuthRepository] enforcing [EmailValidator], zero plaintext
+/// password persistence, demo login, and full GDPR wipe on delete.
 class MockAuthRepository implements AuthRepository {
-  /// Creates a [MockAuthRepository] with seeded `demo@marprom.test` credentials.
+  /// Creates a [MockAuthRepository] with seeded `demo@marprom.si` credentials.
   MockAuthRepository({
     this._prefs,
     this._onDeleteLocalData,
     String boxName = 'm_mobilnost_auth',
+    this.requireEmailVerification = false,
   }) : _store = LocalKeyValueStore(boxName) {
     _seedDemoAccount();
     _controller = StreamController<UserProfile?>.broadcast(
@@ -24,7 +29,7 @@ class MockAuthRepository implements AuthRepository {
   }
 
   /// Demo account email for usability evaluation and quick testing.
-  static const String demoEmail = 'demo@marprom.test';
+  static const String demoEmail = 'demo@marprom.si';
 
   /// Demo account password matching [demoEmail].
   static const String demoPassword = 'demo1234';
@@ -32,15 +37,33 @@ class MockAuthRepository implements AuthRepository {
   final SharedPreferences? _prefs;
   final Future<void> Function()? _onDeleteLocalData;
   final LocalKeyValueStore _store;
-  late final StreamController<UserProfile?> _controller;
 
-  final Map<String, _StoredAccount> _accounts = {};
+  /// When true, newly registered email accounts start unverified until verified.
+  final bool requireEmailVerification;
+
+  late final StreamController<UserProfile?> _controller;
+  final Map<String, _HashedAccount> _accounts = {};
   UserProfile? _currentUser;
+
+  /// Computes a salted one-way digest in memory only (never stores plaintext passwords).
+  static String _saltedDigest(String normalizedEmail, String password) {
+    var h1 = 0x811c9dc5;
+    var h2 = 0x9e3779b9;
+    final input = '$normalizedEmail|marprom-m2-salt-v2|$password';
+    for (var round = 0; round < 64; round++) {
+      for (var i = 0; i < input.length; i++) {
+        final code = input.codeUnitAt(i) ^ (round * 31 + i);
+        h1 = ((h1 ^ code) * 0x01000193) & 0x7fffffff;
+        h2 = ((h2 + (code << 5)) * 0x45d9f3b) & 0x7fffffff;
+      }
+    }
+    return '${h1.toRadixString(16).padLeft(8, '0')}_${h2.toRadixString(16).padLeft(8, '0')}';
+  }
 
   void _seedDemoAccount() {
     final normalized = demoEmail.toLowerCase();
-    _accounts[normalized] = _StoredAccount(
-      password: demoPassword,
+    _accounts[normalized] = _HashedAccount(
+      digest: _saltedDigest(normalized, demoPassword),
       profile: UserProfile(
         id: 'user_demo_marprom',
         email: normalized,
@@ -48,6 +71,8 @@ class MockAuthRepository implements AuthRepository {
         dateOfBirth: DateTime(1995, 5, 14),
         preferredLocaleCode: 'sl',
         guardianConfirmed: false,
+        authProvider: 'email',
+        emailVerified: true,
         createdAt: DateTime(2025, 1, 10),
       ),
     );
@@ -74,22 +99,33 @@ class MockAuthRepository implements AuthRepository {
     required String email,
     required String password,
   }) async {
-    final normalized = email.trim().toLowerCase();
+    final check = EmailValidator.validate(email);
+    if (!check.isValid) {
+      throw AuthException(
+        check.errorCode ?? 'invalid_email',
+        check.errorMessageSl ?? 'Neveljaven e-poštni naslov.',
+      );
+    }
+    final normalized = check.normalizedEmail;
     var account = _accounts[normalized];
 
     if (account == null) {
       final raw = await _store.read('acct_$normalized');
       if (raw is Map) {
         final map = Map<String, dynamic>.from(raw);
-        account = _StoredAccount(
-          password: map['password'] as String,
-          profile: UserProfile.fromJson(map['profile'] as Map),
-        );
-        _accounts[normalized] = account;
+        final digest = map['passwordDigest'] as String?;
+        if (digest != null && map['profile'] is Map) {
+          account = _HashedAccount(
+            digest: digest,
+            profile: UserProfile.fromJson(map['profile'] as Map),
+          );
+          _accounts[normalized] = account;
+        }
       }
     }
 
-    if (account == null || account.password != password) {
+    final expectedDigest = _saltedDigest(normalized, password);
+    if (account == null || account.digest != expectedDigest) {
       throw const AuthException(
         'invalid_credentials',
         'Invalid email or password.',
@@ -111,13 +147,21 @@ class MockAuthRepository implements AuthRepository {
     String preferredLocaleCode = 'sl',
     bool guardianConfirmed = false,
   }) async {
-    final normalized = email.trim().toLowerCase();
-    if (normalized.isEmpty || !normalized.contains('@') || password.length < 4) {
+    final check = EmailValidator.validate(email);
+    if (!check.isValid) {
+      throw AuthException(
+        check.errorCode ?? 'invalid_email',
+        check.errorMessageSl ?? 'Neveljaven e-poštni naslov.',
+      );
+    }
+    if (password.length < 4) {
       throw const AuthException(
         'invalid_input',
         'Valid email and password (min 4 characters) are required.',
       );
     }
+
+    final normalized = check.normalizedEmail;
     if (_accounts.containsKey(normalized) ||
         await _store.read('acct_$normalized') != null) {
       throw const AuthException(
@@ -127,6 +171,7 @@ class MockAuthRepository implements AuthRepository {
     }
 
     final now = DateTime.now();
+    final digest = _saltedDigest(normalized, password);
     final profile = UserProfile(
       id: 'user_${now.microsecondsSinceEpoch}',
       email: normalized,
@@ -134,12 +179,15 @@ class MockAuthRepository implements AuthRepository {
       dateOfBirth: dateOfBirth,
       preferredLocaleCode: preferredLocaleCode,
       guardianConfirmed: guardianConfirmed,
+      authProvider: 'email',
+      emailVerified: !requireEmailVerification,
       createdAt: now,
     );
-    final record = _StoredAccount(password: password, profile: profile);
-    _accounts[normalized] = record;
+
+    _accounts[normalized] = _HashedAccount(digest: digest, profile: profile);
+    // Security invariant: never persist plaintext passwords.
     await _store.write('acct_$normalized', {
-      'password': password,
+      'passwordDigest': digest,
       'profile': profile.toJson(),
     });
     _currentUser = profile;
@@ -163,8 +211,8 @@ class MockAuthRepository implements AuthRepository {
     final resolvedName = firebaseIdentity?.displayName ??
         googleDisplayName ??
         'Luka Maribor (Google)';
-    final resolvedId = firebaseIdentity?.uid ??
-        'google_${resolvedEmail.hashCode.abs()}';
+    final resolvedId =
+        firebaseIdentity?.uid ?? 'google_${resolvedEmail.hashCode.abs()}';
 
     final profile = UserProfile(
       id: resolvedId,
@@ -173,15 +221,15 @@ class MockAuthRepository implements AuthRepository {
       preferredLocaleCode: preferredLocaleCode,
       photoUrl: firebaseIdentity?.photoUrl ?? photoUrl,
       authProvider: 'google',
+      emailVerified: true,
       createdAt: DateTime.now(),
     );
 
-    _accounts[resolvedEmail] = _StoredAccount(
-      password: demoPassword,
-      profile: profile,
-    );
+    final digest = _accounts[resolvedEmail]?.digest ??
+        _saltedDigest(resolvedEmail, 'oauth_google');
+    _accounts[resolvedEmail] = _HashedAccount(digest: digest, profile: profile);
     await _store.write('acct_$resolvedEmail', {
-      'password': demoPassword,
+      'passwordDigest': digest,
       'profile': profile.toJson(),
     });
     _currentUser = profile;
@@ -200,7 +248,14 @@ class MockAuthRepository implements AuthRepository {
 
   @override
   Future<void> resetPassword(String email) async {
-    final normalized = email.trim().toLowerCase();
+    final check = EmailValidator.validate(email);
+    if (!check.isValid) {
+      throw AuthException(
+        check.errorCode ?? 'invalid_email',
+        check.errorMessageSl ?? 'Neveljaven e-poštni naslov.',
+      );
+    }
+    final normalized = check.normalizedEmail;
     final known = _accounts.containsKey(normalized) ||
         await _store.read('acct_$normalized') != null;
     if (!known) {
@@ -212,14 +267,26 @@ class MockAuthRepository implements AuthRepository {
   }
 
   @override
+  Future<void> sendEmailVerification() async {
+    // No-op in local test/offline repository.
+  }
+
+  @override
+  Future<UserProfile?> reloadCurrentUser() async {
+    final current = _currentUser;
+    if (current == null) return null;
+    final verified = current.copyWith(emailVerified: true);
+    return updateProfile(verified);
+  }
+
+  @override
   Future<UserProfile> updateProfile(UserProfile updated) async {
     final normalized = updated.email.trim().toLowerCase();
-    final existing = _accounts[normalized];
-    final password = existing?.password ?? demoPassword;
-    _accounts[normalized] =
-        _StoredAccount(password: password, profile: updated);
+    final digest = _accounts[normalized]?.digest ??
+        _saltedDigest(normalized, demoPassword);
+    _accounts[normalized] = _HashedAccount(digest: digest, profile: updated);
     await _store.write('acct_$normalized', {
-      'password': password,
+      'passwordDigest': digest,
       'profile': updated.toJson(),
     });
     _currentUser = updated;
@@ -259,12 +326,12 @@ class MockAuthRepository implements AuthRepository {
   }
 }
 
-class _StoredAccount {
-  const _StoredAccount({
-    required this.password,
+class _HashedAccount {
+  const _HashedAccount({
+    required this.digest,
     required this.profile,
   });
 
-  final String password;
+  final String digest;
   final UserProfile profile;
 }

@@ -1,8 +1,10 @@
 // Responsive navigation shell switching between NavigationBar and NavigationRail.
 
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../core/accessibility/a11y_settings.dart';
 import '../core/accessibility/semantics_helpers.dart';
 import '../core/layout/breakpoints.dart';
 import '../core/theme/brand_tokens.dart';
@@ -12,7 +14,7 @@ import '../core/widgets/simulated_data_badge.dart';
 import '../features/web_portal/presentation/marprom_web_scaffold.dart';
 
 /// Top-level adaptive scaffold hosting the 4 primary transit destinations.
-class ShellScaffold extends StatelessWidget {
+class ShellScaffold extends ConsumerWidget {
   /// Creates a [ShellScaffold] wrapping [navigationShell].
   const ShellScaffold({
     super.key,
@@ -30,10 +32,11 @@ class ShellScaffold extends StatelessWidget {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final l10n = context.l10n;
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
+    final isDark = scheme.brightness == Brightness.dark;
     final brand = MarpromBrand.of(context);
     final width = MediaQuery.sizeOf(context).width;
     final layoutSize = LayoutBreakpoints.fromWidth(width);
@@ -73,6 +76,14 @@ class ShellScaffold extends StatelessWidget {
           ],
         ),
         actions: [
+          _ShellAction(
+            semanticsLabel: isDark ? l10n.settingsThemeLight : l10n.settingsThemeDark,
+            tooltip: isDark ? l10n.settingsThemeLight : l10n.settingsThemeDark,
+            icon: isDark ? Icons.light_mode_rounded : Icons.dark_mode_rounded,
+            onPressed: () => ref.read(a11ySettingsProvider.notifier).setThemeMode(
+                  isDark ? AppThemeChoice.light : AppThemeChoice.dark,
+                ),
+          ),
           _ShellAction(
             semanticsLabel: l10n.a11yNoticesButton,
             tooltip: l10n.navNotices,

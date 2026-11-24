@@ -1,11 +1,15 @@
-// Simulates active Marprom buses moving smoothly along route polylines over time.
+//**********************************************
+// Marprom deterministic fleet simulator       *
+//**********************************************
 
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:m_mobilnost/core/utils/geo.dart';
 
+import '../models/bus_line.dart';
 import '../models/bus_position.dart';
 import '../seed/seed_lines.dart';
 import '../seed/seed_stops.dart';
@@ -113,12 +117,12 @@ class BusSimulator {
           direction: direction,
           date: now,
         );
-          final simulationPolyline =
-              _googleRouteGeometries['${line.id}|${direction.id}'] ??
-                  direction.roadPolyline ??
-                  direction.polyline;
-          final polylineMeters =
-              GeoUtils.polylineLengthMeters(simulationPolyline);
+        final simulationPolyline =
+            _googleRouteGeometries['${line.id}|${direction.id}'] ??
+                direction.roadPolyline ??
+                direction.polyline;
+        final polylineMeters =
+            GeoUtils.polylineLengthMeters(simulationPolyline);
 
         for (final trip in trips) {
           final delaySeconds = _delayModel.delaySecondsForTrip(
@@ -151,6 +155,11 @@ class BusSimulator {
           final progress = (elapsedSec / totalDurationSec).clamp(0.0, 1.0);
           final pos =
               GeoUtils.interpolatePolyline(simulationPolyline, progress);
+          final aheadPos = GeoUtils.interpolatePolyline(
+            simulationPolyline,
+            (progress + 0.015).clamp(0.0, 1.0),
+          );
+          final headingDegrees = GeoUtils.bearingDegrees(pos, aheadPos);
 
           // Identify the next stop ahead of the vehicle based on adjusted stop times.
           var nextIdx = direction.stopIds.length - 1;
@@ -172,7 +181,6 @@ class BusSimulator {
           final etaSeconds =
               nextStopEta.difference(now).inSeconds.clamp(0, 7200);
 
-          // Derive realistic urban speed from route length / scheduled duration.
           final speedKmh = totalDurationSec > 0
               ? ((polylineMeters / 1000.0) / (totalDurationSec / 3600.0))
                   .clamp(16.0, 38.0)
@@ -186,20 +194,61 @@ class BusSimulator {
             at: now,
           );
 
-          final isElectric = line.id == 'G5' ||
-              line.id == 'G6' ||
+          // Resolve realistic vehicle class & capacity strictly <= 120.
+          final isPeakHour = (now.hour >= 7 && now.hour <= 8) ||
+              (now.hour >= 13 && now.hour <= 16);
+          final MarpromVehicleClass vehicleClass;
+          final int capacity;
+          if (line.defaultVehicleClass == MarpromVehicleClass.midibus9m) {
+            vehicleClass = MarpromVehicleClass.midibus9m;
+            capacity = line.maxCapacity.clamp(1, 64);
+          } else if (line.defaultVehicleClass ==
+              MarpromVehicleClass.articulated18m) {
+            // Peak trunk runs deploy 18m articulated buses (max 120); off-peak deploy 12m solo (90).
+            if (isPeakHour || occupancy.loadPercent >= 62) {
+              vehicleClass = MarpromVehicleClass.articulated18m;
+              capacity = 120;
+            } else {
+              vehicleClass = MarpromVehicleClass.solo12m;
+              capacity = 90;
+            }
+          } else {
+            vehicleClass = MarpromVehicleClass.solo12m;
+            capacity = line.maxCapacity.clamp(85, 95);
+          }
+
+          final seatedCapacity = vehicleClass.defaultSeatedCapacity;
+          final standingCapacity =
+              (capacity - seatedCapacity).clamp(1, capacity);
+          final passengerCount =
+              ((occupancy.loadPercent / 100.0) * capacity)
+                  .round()
+                  .clamp(1, capacity);
+
+          // Riders fill seats first (realistic urban behavior) before standing room fills.
+          final seatedTarget = occupancy.loadPercent <= 45
+              ? math.min(passengerCount, (seatedCapacity * 0.88).round())
+              : math.min(passengerCount, seatedCapacity);
+          final seatedCount = seatedTarget.clamp(0, seatedCapacity);
+          final standingCount =
+              (passengerCount - seatedCount).clamp(0, standingCapacity);
+
+          final isElectric = line.isElectricDefault ||
               ((line.id == 'G1' || line.id == 'G2') &&
                   trip.tripId.hashCode.isEven);
-          final capacity = line.id == 'G5'
-              ? 70
-              : (line.isMainTrunk ? 85 : 65);
-          final passengerCount =
-              ((occupancy.loadPercent / 100.0) * capacity).round().clamp(1, capacity);
-          final vehicleModel = isElectric
-              ? (line.id == 'G5' ? 'Iveco E-Way 12m (E)' : "MAN Lion's City 12E")
-              : (line.isMainTrunk
-                  ? "MAN Lion's City 12"
-                  : 'Iveco Crossway LE');
+          final vehicleModel = switch (vehicleClass) {
+            MarpromVehicleClass.midibus9m => 'IVECO E-WAY 9.5m (E)',
+            MarpromVehicleClass.articulated18m => isElectric
+                ? "MAN Lion's City 18E (Zgibni)"
+                : "MAN Lion's City 18G (Zgibni)",
+            MarpromVehicleClass.solo12m => isElectric
+                ? (line.id == 'G5'
+                    ? 'IVECO E-WAY 12m (E)'
+                    : "MAN Lion's City 12E")
+                : (line.isLowFloor
+                    ? "MAN Lion's City 12"
+                    : 'IVECO Crossway High-Floor'),
+          };
 
           buses.add(
             BusPosition(
@@ -220,9 +269,20 @@ class BusSimulator {
               updatedAt: now,
               passengerCount: passengerCount,
               vehicleCapacity: capacity,
-              loadPercent: occupancy.loadPercent,
+              loadPercent:
+                  ((passengerCount / capacity) * 100).round().clamp(0, 100),
               vehicleModel: vehicleModel,
               isElectric: isElectric,
+              vehicleClass: vehicleClass,
+              seatedCount: seatedCount,
+              standingCount: standingCount,
+              seatedCapacity: seatedCapacity,
+              standingCapacity: standingCapacity,
+              isLowFloor: line.isLowFloor,
+              hasWheelchairRamp: line.hasWheelchairRamp,
+              hasWheelchairSpace: line.hasWheelchairSpace,
+              hasAudioAnnouncements: line.hasAudioAnnouncements,
+              headingDegrees: headingDegrees,
             ),
           );
         }
@@ -233,7 +293,6 @@ class BusSimulator {
 
   void _startTimerIfNeeded() {
     if (_disposed || !_useSimulatedLive) {
-      // Emit initial snapshot (empty when disabled) on subscription.
       scheduleMicrotask(_emitCurrent);
       return;
     }

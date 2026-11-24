@@ -17,6 +17,7 @@ import '../features/nearest_stop/presentation/nearest_stop_screen.dart';
 import '../features/notices/presentation/notices_screen.dart';
 import '../features/onboarding/presentation/new_rider_guide_screen.dart';
 import '../features/onboarding/presentation/onboarding_screen.dart';
+import '../features/onboarding/presentation/welcome_screen.dart';
 import '../features/settings/presentation/settings_screen.dart';
 import '../features/tickets/presentation/ticket_checkout_screen.dart';
 import '../features/tickets/presentation/ticket_shop_screen.dart';
@@ -213,17 +214,18 @@ List<RouteBase> _buildWebRoutes() {
         ),
       ],
     ),
-    GoRoute(
-      path: '/download',
-      pageBuilder: (context, state) => _adaptivePage(
-        context: context,
-        state: state,
-        child: const MarpromWebScaffold(
-          currentPath: '/download',
-          child: WebDownloadPage(),
+    if (kIsWeb)
+      GoRoute(
+        path: '/download',
+        pageBuilder: (context, state) => _adaptivePage(
+          context: context,
+          state: state,
+          child: const MarpromWebScaffold(
+            currentPath: '/download',
+            child: WebDownloadPage(),
+          ),
         ),
       ),
-    ),
     ..._sharedUtilityRoutes(),
   ];
 }
@@ -373,17 +375,18 @@ List<RouteBase> _buildMobileRoutes() {
         ),
       ),
     ),
-    GoRoute(
-      path: '/download',
-      parentNavigatorKey: _rootNavigatorKey,
-      pageBuilder: (context, state) => _adaptivePage(
-        context: context,
-        state: state,
-        child: const Scaffold(
-          body: SingleChildScrollView(child: WebDownloadPage()),
+    if (kIsWeb)
+      GoRoute(
+        path: '/download',
+        parentNavigatorKey: _rootNavigatorKey,
+        pageBuilder: (context, state) => _adaptivePage(
+          context: context,
+          state: state,
+          child: const Scaffold(
+            body: SingleChildScrollView(child: WebDownloadPage()),
+          ),
         ),
       ),
-    ),
     ..._sharedUtilityRoutes(),
   ];
 }
@@ -458,6 +461,15 @@ List<RouteBase> _sharedUtilityRoutes() {
         context: context,
         state: state,
         child: const OnboardingScreen(),
+      ),
+    ),
+    GoRoute(
+      path: '/welcome',
+      parentNavigatorKey: _rootNavigatorKey,
+      pageBuilder: (context, state) => _adaptivePage(
+        context: context,
+        state: state,
+        child: const WelcomeScreen(),
       ),
     ),
     GoRoute(

@@ -1,10 +1,11 @@
-// Resolves & caches Google Maps Routes API v2 street geometries for all 19 Marprom bus lines.
+//**********************************************
+// Google Routes API v2 Geometry Cache Service *
+//**********************************************
 
 import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -17,7 +18,11 @@ import '../maps/google_web_views.dart';
 import '../utils/geo.dart';
 import 'google_routes_service.dart';
 
-const String _routeCachePrefix = 'marprom_groute_v4_';
+const String _routeCachePrefix = 'marprom_groute_v5_';
+
+//**********************************************
+// Polyline slicing & routeGeometryProvider    *
+//**********************************************
 
 /// Slices the nearest contiguous segment between [start] and [end] along a road [polyline].
 List<LatLng> slicePolylineBetweenPoints(
@@ -67,12 +72,12 @@ List<LatLng> slicePolylineBetweenPoints(
   return result;
 }
 
-/// Loads accurate drivable road geometry for a single seeded Marprom bus direction
-/// (`'lineId|directionId'`) using Google Routes API v2 first, then OSRM, then dense fallback.
+/// Loads real street-following geometry from Google Routes API v2 (`computeRoutes`)
+/// for a single Marprom line direction (`'lineId|directionId'`).
 final routeGeometryProvider =
     FutureProvider.family<List<LatLng>, String>((ref, key) async {
   final cached = ref.watch(googleLineRoutesProvider.select((m) => m[key]));
-  if (cached != null && cached.polylinePoints.length >= 2) {
+  if (cached != null && cached.isLiveApi && cached.polylinePoints.length >= 2) {
     return cached.polylinePoints;
   }
 
@@ -85,9 +90,8 @@ final routeGeometryProvider =
     return const <LatLng>[];
   }
 
-  final fallback = _densify(direction.polyline);
   if (isFlutterTestEnvironment) {
-    return fallback;
+    return direction.polyline;
   }
 
   final liveResult = await ref
@@ -97,39 +101,12 @@ final routeGeometryProvider =
     return liveResult.polylinePoints;
   }
 
-  // Fallback to OSRM driving geometry if Google Routes API is unavailable or restricted.
-  final coordinates = direction.polyline
-      .map((point) => '${point.longitude},${point.latitude}')
-      .join(';');
-  final uri = Uri.parse(
-    'https://router.project-osrm.org/route/v1/driving/$coordinates'
-    '?overview=full&geometries=geojson&steps=false',
-  );
-
-  try {
-    final response = await http.get(uri).timeout(const Duration(seconds: 6));
-    if (response.statusCode != 200) return fallback;
-
-    final data = jsonDecode(response.body) as Map<String, dynamic>;
-    final routes = data['routes'] as List<dynamic>?;
-    if (routes == null || routes.isEmpty) return fallback;
-
-    final geometry =
-        ((routes.first as Map<String, dynamic>)['geometry']
-            as Map<String, dynamic>?)?['coordinates'] as List<dynamic>?;
-    if (geometry == null || geometry.length < 2) return fallback;
-
-    return [
-      for (final coordinate in geometry)
-        LatLng(
-          (coordinate as List<dynamic>)[1] as double,
-          coordinate[0] as double,
-        ),
-    ];
-  } catch (_) {
-    return fallback;
-  }
+  return direction.polyline;
 });
+
+//**********************************************
+// GoogleLineRoutesNotifier                    *
+//**********************************************
 
 /// Manages Google Maps Routes API (`computeRoutes`) road geometries & metrics for all
 /// live Marprom bus lines, caching responses in [SharedPreferences] and pushing
@@ -168,7 +145,8 @@ class GoogleLineRoutesNotifier
           final distanceMeters = (decoded['distanceMeters'] as num?)?.round();
           final rawDuration = decoded['rawDuration'] as String?;
           final isLive = decoded['isLiveApi'] as bool? ?? false;
-          if (encoded != null &&
+          if (isLive &&
+              encoded != null &&
               encoded.isNotEmpty &&
               distanceMeters != null &&
               rawDuration != null) {
@@ -180,7 +158,7 @@ class GoogleLineRoutesNotifier
                     GoogleRoutesService.parseDurationSeconds(rawDuration),
                 rawDuration: rawDuration,
                 polylinePoints: points,
-                isLiveApi: isLive,
+                isLiveApi: true,
                 encodedPolyline: encoded,
               );
               simMap[key] = points;
@@ -258,7 +236,7 @@ class GoogleLineRoutesNotifier
 
     final resolvedPoints = result.polylinePoints.length >= 2
         ? result.polylinePoints
-        : _densify(direction.polyline);
+        : direction.polyline;
     final normalized = GoogleRouteResult(
       distanceMeters: result.distanceMeters,
       durationSeconds: result.durationSeconds,
@@ -347,23 +325,3 @@ final googleLineRoutesProvider = StateNotifierProvider<
     prefs: prefs,
   );
 });
-
-List<LatLng> _densify(List<LatLng> stops) {
-  if (stops.length < 2) return List<LatLng>.from(stops);
-  final result = <LatLng>[];
-  for (var i = 0; i < stops.length - 1; i++) {
-    final from = stops[i];
-    final to = stops[i + 1];
-    if (i == 0) result.add(from);
-    for (var step = 1; step <= 8; step++) {
-      final t = step / 8;
-      result.add(
-        LatLng(
-          from.latitude + (to.latitude - from.latitude) * t,
-          from.longitude + (to.longitude - from.longitude) * t,
-        ),
-      );
-    }
-  }
-  return result;
-}

@@ -2475,7 +2475,7 @@ abstract class AppLocalizations {
   /// No description provided for @accountDemoAccountHint.
   ///
   /// In sl, this message translates to:
-  /// **'Demo uporabnik: demo@marprom.test / demo1234'**
+  /// **'Demo uporabnik: demo@marprom.si / demo1234'**
   String get accountDemoAccountHint;
 
   /// No description provided for @accountYouthEligible.

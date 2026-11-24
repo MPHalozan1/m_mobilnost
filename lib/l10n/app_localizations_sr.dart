@@ -1390,7 +1390,7 @@ class AppLocalizationsSr extends AppLocalizations {
 
   @override
   String get accountDemoAccountHint =>
-      'Demo korisnik: demo@marprom.test / demo1234';
+      'Demo korisnik: demo@marprom.si / demo1234';
 
   @override
   String get accountYouthEligible => 'Pravo na omladinsku / studentsku tarifu';
@@ -2858,7 +2858,7 @@ class AppLocalizationsSrLatn extends AppLocalizationsSr {
 
   @override
   String get accountDemoAccountHint =>
-      'Demo korisnik: demo@marprom.test / demo1234';
+      'Demo korisnik: demo@marprom.si / demo1234';
 
   @override
   String get accountYouthEligible => 'Pravo na omladinsku / studentsku tarifu';
