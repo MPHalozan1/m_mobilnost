@@ -76,14 +76,15 @@ class ShellScaffold extends ConsumerWidget {
           ],
         ),
         actions: [
-          _ShellAction(
-            semanticsLabel: isDark ? l10n.settingsThemeLight : l10n.settingsThemeDark,
-            tooltip: isDark ? l10n.settingsThemeLight : l10n.settingsThemeDark,
-            icon: isDark ? Icons.light_mode_rounded : Icons.dark_mode_rounded,
-            onPressed: () => ref.read(a11ySettingsProvider.notifier).setThemeMode(
-                  isDark ? AppThemeChoice.light : AppThemeChoice.dark,
-                ),
-          ),
+          if (!isCompact)
+            _ShellAction(
+              semanticsLabel: isDark ? l10n.settingsThemeLight : l10n.settingsThemeDark,
+              tooltip: isDark ? l10n.settingsThemeLight : l10n.settingsThemeDark,
+              icon: isDark ? Icons.light_mode_rounded : Icons.dark_mode_rounded,
+              onPressed: () => ref.read(a11ySettingsProvider.notifier).setThemeMode(
+                    isDark ? AppThemeChoice.light : AppThemeChoice.dark,
+                  ),
+            ),
           _ShellAction(
             semanticsLabel: l10n.a11yNoticesButton,
             tooltip: l10n.navNotices,

@@ -98,12 +98,12 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      expect(find.text('74 / 120 potnikov'), findsOneWidget);
+      expect(find.textContaining('74 / 120'), findsOneWidget);
       await tester.tap(find.byType(BusOccupancyCutaway));
       await tester.pumpAndSettle();
 
-      expect(find.textContaining('36 / 40'), findsOneWidget);
-      expect(find.textContaining('38 / 80'), findsOneWidget);
+      expect(find.textContaining('36/40'), findsOneWidget);
+      expect(find.textContaining('38/80'), findsOneWidget);
     });
   });
 

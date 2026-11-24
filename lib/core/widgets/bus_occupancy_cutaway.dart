@@ -184,12 +184,17 @@ class _BusOccupancyCutawayState extends State<BusOccupancyCutaway> {
                           ),
                         ),
                         const SizedBox(width: 7),
-                        Text(
-                          widget.vehicleModel ?? widget.vehicleClass.label,
-                          style:
-                              Theme.of(context).textTheme.labelMedium?.copyWith(
-                                    fontWeight: FontWeight.w800,
-                                  ),
+                        Flexible(
+                          child: Text(
+                            widget.vehicleModel ?? widget.vehicleClass.label,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context)
+                                .textTheme
+                                .labelMedium
+                                ?.copyWith(
+                                  fontWeight: FontWeight.w800,
+                                ),
+                          ),
                         ),
                       ],
                     ),
@@ -341,11 +346,14 @@ class _MiniCountPill extends StatelessWidget {
         children: [
           Icon(icon, size: 13.5, color: color),
           const SizedBox(width: 5),
-          Text(
-            label,
-            style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                  fontWeight: FontWeight.w700,
-                ),
+          Flexible(
+            child: Text(
+              label,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                    fontWeight: FontWeight.w700,
+                  ),
+            ),
           ),
         ],
       ),

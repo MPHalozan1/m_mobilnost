@@ -266,8 +266,11 @@ class _GoogleMap3DWidgetState extends ConsumerState<GoogleMap3DWidget>
           right: 10,
           child: SafeArea(
             bottom: false,
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 6,
+              alignment: WrapAlignment.spaceBetween,
+              crossAxisAlignment: WrapCrossAlignment.center,
               children: [
                 Material(
                   color: scheme.surface.withValues(alpha: 0.94),
@@ -275,8 +278,9 @@ class _GoogleMap3DWidgetState extends ConsumerState<GoogleMap3DWidget>
                   borderRadius: BorderRadius.circular(12),
                   child: Padding(
                     padding: const EdgeInsets.all(3),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
+                    child: Wrap(
+                      spacing: 2,
+                      runSpacing: 2,
                       children: [
                         _ModePill(
                           selected: !_use3D,
@@ -290,7 +294,6 @@ class _GoogleMap3DWidgetState extends ConsumerState<GoogleMap3DWidget>
                             });
                           },
                         ),
-                        const SizedBox(width: 2),
                         _ModePill(
                           selected: _use3D,
                           icon: Icons.view_in_ar_rounded,
