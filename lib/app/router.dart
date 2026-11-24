@@ -39,6 +39,13 @@ class _OnboardingRefreshNotifier extends ChangeNotifier {
   void trigger() => notifyListeners();
 }
 
+/// When built with --dart-define=FORCE_MOBILE_UI=true, web builds render the
+/// mobile app shell instead of the web portal (used for UI previews).
+const bool _forceMobileUi = bool.fromEnvironment('FORCE_MOBILE_UI');
+
+/// Whether the web portal routes should be used.
+const bool _useWebPortal = kIsWeb && !_forceMobileUi;
+
 /// Provides the single [GoRouter] instance wired to all app & web portal routes.
 final routerProvider = Provider<GoRouter>((ref) {
   final refreshNotifier = _OnboardingRefreshNotifier();
@@ -52,14 +59,14 @@ final routerProvider = Provider<GoRouter>((ref) {
     initialLocation: '/',
     refreshListenable: refreshNotifier,
     redirect: (context, state) {
-      if (kIsWeb) return null;
+      if (_useWebPortal) return null;
       final onboardingDone = ref.read(a11ySettingsProvider).onboardingDone;
       if (!onboardingDone && state.uri.path == '/') {
         return '/onboarding';
       }
       return null;
     },
-    routes: kIsWeb ? _buildWebRoutes() : _buildMobileRoutes(),
+    routes: _useWebPortal ? _buildWebRoutes() : _buildMobileRoutes(),
   );
 
   ref.onDispose(() {

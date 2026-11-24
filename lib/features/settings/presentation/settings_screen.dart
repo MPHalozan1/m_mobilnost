@@ -15,6 +15,7 @@ import '../../../core/layout/responsive_builder.dart';
 import '../../../core/network/connectivity_provider.dart';
 import '../../../core/widgets/big_button.dart';
 import '../../../core/widgets/offline_banner.dart';
+import '../../../core/widgets/ui_kit.dart';
 import '../../../data/models/bus_stop.dart';
 import '../../../data/repositories/repository_providers.dart';
 import '../domain/usability_tracker.dart';
@@ -175,7 +176,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                       : Icons.casino_outlined,
                   label: '$seed',
                   variant: settings.simulationSeed == seed
-                      ? BigButtonVariant.primary
+                      ? BigButtonVariant.selected
                       : BigButtonVariant.outlined,
                   onPressed: () => settingsNotifier.setSimulationSeed(seed),
                 ),
@@ -415,24 +416,25 @@ class _SectionCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Grouped-list style: the section title sits above its card.
     return AccessibleSection(
       header: true,
       label: title,
-      child: Card(
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                title,
-                style: Theme.of(context).textTheme.titleMedium,
-              ),
-              const SizedBox(height: 12),
-              child,
-            ],
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(6, 4, 6, 10),
+            child: Text(
+              title,
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
           ),
-        ),
+          SurfaceCard(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+            child: child,
+          ),
+        ],
       ),
     );
   }
@@ -481,7 +483,7 @@ class _LanguageSelector extends StatelessWidget {
                 label: label,
                 semanticLabel: '$label (${locale.toLanguageTag()})',
                 variant: selectedCode == code
-                    ? BigButtonVariant.primary
+                    ? BigButtonVariant.selected
                     : BigButtonVariant.outlined,
                 onPressed: () => onSelected(code),
               ),
@@ -532,7 +534,7 @@ class _ThemeSelector extends StatelessWidget {
                 icon: icon,
                 label: label,
                 variant: selected == choice
-                    ? BigButtonVariant.primary
+                    ? BigButtonVariant.selected
                     : BigButtonVariant.outlined,
                 onPressed: () => onSelected(choice),
               ),

@@ -22,8 +22,13 @@ class GoogleMap3DWidget extends StatefulWidget {
     this.markers3D = const [],
     this.polylines2D = const [],
     this.markers2D = const [],
-    this.initialUse3D = true,
-    this.showPresets = true,
+    this.initialUse3D = false,
+    this.showPresets = false,
+    this.showStatusPill = true,
+    this.fitBounds = false,
+    this.fitSignature = '',
+    this.onFullScreenToggle,
+    this.isFullScreen = false,
     this.activeBusCount,
     this.totalPassengers,
     this.onRecenter2D,
@@ -39,23 +44,38 @@ class GoogleMap3DWidget extends StatefulWidget {
   /// Optional controller for 2D mode.
   final MapController? mapController;
 
-  /// Polylines rendered in 3D Google Maps mode.
+  /// Polylines rendered in Google 2D & 3D modes.
   final List<GoogleMap3DPolylineData> polylines3D;
 
-  /// Markers rendered in 3D Google Maps mode.
+  /// Markers rendered in Google 2D & 3D modes.
   final List<GoogleMap3DMarkerData> markers3D;
 
-  /// Polylines rendered in 2D `flutter_map` mode.
+  /// Polylines rendered in `flutter_map` VM-test fallback mode.
   final List<Polyline> polylines2D;
 
-  /// Markers rendered in 2D `flutter_map` mode.
+  /// Markers rendered in `flutter_map` VM-test fallback mode.
   final List<Marker> markers2D;
 
-  /// Whether 3D Google Maps mode starts selected.
+  /// Whether 3D Google Maps mode starts selected (defaults to 2D Google Road View).
   final bool initialUse3D;
 
   /// Whether to show Maribor 3D camera preset chips.
   final bool showPresets;
+
+  /// Whether to render the live bus/passenger count pill on wider viewports.
+  final bool showStatusPill;
+
+  /// Auto-fits camera bounds to active polylines/markers when [fitSignature] changes.
+  final bool fitBounds;
+
+  /// Signature key guarding camera bounds re-fits.
+  final String fitSignature;
+
+  /// Optional callback enabling a compact top-right full-screen map toggle button.
+  final VoidCallback? onFullScreenToggle;
+
+  /// True when already displayed inside full-screen mode.
+  final bool isFullScreen;
 
   /// Optional live bus count badge shown in the top corner.
   final int? activeBusCount;
@@ -102,6 +122,12 @@ class _GoogleMap3DWidgetState extends State<GoogleMap3DWidget> {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final viewportWidth = MediaQuery.sizeOf(context).width;
+    final showLiveCounter = widget.showStatusPill &&
+        viewportWidth >= 520 &&
+        (widget.activeBusCount != null || widget.totalPassengers != null);
+    final showCameraPresets =
+        widget.showPresets && (_use3D || viewportWidth >= 800);
 
     return Stack(
       children: [
@@ -116,101 +142,145 @@ class _GoogleMap3DWidgetState extends State<GoogleMap3DWidget> {
                   polylines: widget.polylines3D,
                   markers: widget.markers3D,
                 )
-              : MariborTransitMap(
-                  mapController: widget.mapController,
-                  initialCenter: _activePreset.center,
-                  initialZoom: widget.initialZoom,
-                  polylines: widget.polylines2D,
-                  markers: widget.markers2D,
-                  onRecenter: widget.onRecenter2D,
-                  recenterLabel: widget.recenterLabel,
-                ),
+              : (isFlutterTestEnvironment
+                  ? MariborTransitMap(
+                      mapController: widget.mapController,
+                      initialCenter: _activePreset.center,
+                      initialZoom: widget.initialZoom,
+                      polylines: widget.polylines2D,
+                      markers: widget.markers2D,
+                      onRecenter: widget.onRecenter2D,
+                      recenterLabel: widget.recenterLabel,
+                    )
+                  : GoogleRoadMapPlatformView(
+                      center: _activePreset.center,
+                      zoom: widget.initialZoom,
+                      polylines: widget.polylines3D,
+                      markers: widget.markers3D,
+                      fitBounds: widget.fitBounds && _activePreset.id == 'initial',
+                      fitSignature: widget.fitSignature,
+                    )),
         ),
-        // Top-left live fleet pill + 3D/2D mode toggle
+        // Compact top bar: 2D/3D switcher left + optional live pill & full-screen toggle right
         Positioned(
-          top: 12,
-          left: 12,
-          right: 12,
-          child: Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            alignment: WrapAlignment.spaceBetween,
-            crossAxisAlignment: WrapCrossAlignment.center,
-            children: [
-              Material(
-                color: scheme.surface.withValues(alpha: 0.94),
-                elevation: 3,
-                borderRadius: BorderRadius.circular(14),
-                child: Padding(
-                  padding: const EdgeInsets.all(4),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      _ModePill(
-                        selected: _use3D,
-                        icon: Icons.view_in_ar_rounded,
-                        label: 'Google 3D',
-                        onTap: () => setState(() => _use3D = true),
-                      ),
-                      const SizedBox(width: 4),
-                      _ModePill(
-                        selected: !_use3D,
-                        icon: Icons.map_outlined,
-                        label: '2D Mreža',
-                        onTap: () => setState(() => _use3D = false),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-              if (widget.activeBusCount != null || widget.totalPassengers != null)
+          top: 10,
+          left: 10,
+          right: 10,
+          child: SafeArea(
+            bottom: false,
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
                 Material(
-                  color: const Color(0xFF0F172A).withValues(alpha: 0.90),
+                  color: scheme.surface.withValues(alpha: 0.94),
                   elevation: 3,
                   borderRadius: BorderRadius.circular(12),
                   child: Padding(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 12,
-                      vertical: 8,
-                    ),
+                    padding: const EdgeInsets.all(3),
                     child: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Container(
-                          width: 8,
-                          height: 8,
-                          decoration: const BoxDecoration(
-                            color: Color(0xFF22C55E),
-                            shape: BoxShape.circle,
-                          ),
+                        _ModePill(
+                          selected: !_use3D,
+                          icon: Icons.map_outlined,
+                          label: '2D',
+                          onTap: () => setState(() => _use3D = false),
                         ),
-                        const SizedBox(width: 8),
-                        Text(
-                          [
-                            if (widget.activeBusCount != null)
-                              '${widget.activeBusCount} busov v živo',
-                            if (widget.totalPassengers != null)
-                              '${widget.totalPassengers} potnikov',
-                          ].join(' • '),
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 12,
-                            fontWeight: FontWeight.w700,
-                          ),
+                        const SizedBox(width: 2),
+                        _ModePill(
+                          selected: _use3D,
+                          icon: Icons.view_in_ar_rounded,
+                          label: '3D',
+                          onTap: () => setState(() => _use3D = true),
                         ),
                       ],
                     ),
                   ),
                 ),
-            ],
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (showLiveCounter) ...[
+                      Material(
+                        color: const Color(0xFF0F172A).withValues(alpha: 0.90),
+                        elevation: 3,
+                        borderRadius: BorderRadius.circular(12),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 7,
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Container(
+                                width: 8,
+                                height: 8,
+                                decoration: const BoxDecoration(
+                                  color: Color(0xFF22C55E),
+                                  shape: BoxShape.circle,
+                                ),
+                              ),
+                              const SizedBox(width: 7),
+                              Text(
+                                [
+                                  if (widget.activeBusCount != null)
+                                    '${widget.activeBusCount} busov v živo',
+                                  if (widget.totalPassengers != null)
+                                    '${widget.totalPassengers} potnikov',
+                                ].join(' • '),
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                    ],
+                    if (widget.onFullScreenToggle != null)
+                      Material(
+                        color: scheme.surface.withValues(alpha: 0.95),
+                        elevation: 3,
+                        borderRadius: BorderRadius.circular(12),
+                        child: IconButton(
+                          key: Key(
+                            widget.isFullScreen
+                                ? 'exit_fullscreen_map_btn'
+                                : 'toggle_fullscreen_map_btn',
+                          ),
+                          constraints: const BoxConstraints(
+                            minWidth: 44,
+                            minHeight: 44,
+                          ),
+                          padding: EdgeInsets.zero,
+                          tooltip: widget.isFullScreen
+                              ? 'Zapri celozaslonski zemljevid'
+                              : 'Celozaslonski zemljevid',
+                          icon: Icon(
+                            widget.isFullScreen
+                                ? Icons.fullscreen_exit_rounded
+                                : Icons.fullscreen_rounded,
+                            color: scheme.onSurface,
+                          ),
+                          onPressed: widget.onFullScreenToggle,
+                        ),
+                      ),
+                  ],
+                ),
+              ],
+            ),
           ),
         ),
         // Bottom Maribor 3D camera presets
-        if (widget.showPresets)
+        if (showCameraPresets)
           Positioned(
-            left: 12,
-            right: _use3D ? 12 : 160,
-            bottom: 12,
+            left: 10,
+            right: _use3D ? 10 : 120,
+            bottom: 10,
             child: SingleChildScrollView(
               scrollDirection: Axis.horizontal,
               child: Row(
@@ -270,10 +340,10 @@ class _ModePill extends StatelessWidget {
       onTap: onTap,
       borderRadius: BorderRadius.circular(10),
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
         decoration: BoxDecoration(
           color: selected ? scheme.primary : Colors.transparent,
-          borderRadius: BorderRadius.circular(10),
+          borderRadius: BorderRadius.circular(9),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,

@@ -10,6 +10,7 @@ import '../../../core/accessibility/semantics_helpers.dart';
 import '../../../core/layout/breakpoints.dart';
 import '../../../core/layout/responsive_builder.dart';
 import '../../../core/widgets/big_button.dart';
+import '../../../core/widgets/brand_logo.dart';
 
 /// First-run onboarding screen covering language, accessibility, location, and GDPR.
 class OnboardingScreen extends ConsumerWidget {
@@ -54,7 +55,7 @@ class OnboardingScreen extends ConsumerWidget {
                           : Icons.language_rounded,
                       label: label,
                       variant: settings.localeCode == code
-                          ? BigButtonVariant.primary
+                          ? BigButtonVariant.selected
                           : BigButtonVariant.outlined,
                       onPressed: () => notifier.setLocaleCode(code),
                     ),
@@ -147,7 +148,7 @@ class OnboardingScreen extends ConsumerWidget {
                     icon: Icons.my_location_rounded,
                     label: l10n.onboardingUseGps,
                     variant: !settings.locationManualMode
-                        ? BigButtonVariant.primary
+                        ? BigButtonVariant.selected
                         : BigButtonVariant.outlined,
                     onPressed: () => notifier.setLocationManualMode(false),
                   ),
@@ -155,7 +156,7 @@ class OnboardingScreen extends ConsumerWidget {
                     icon: Icons.pin_drop_outlined,
                     label: l10n.onboardingUseManualLocation,
                     variant: settings.locationManualMode
-                        ? BigButtonVariant.primary
+                        ? BigButtonVariant.selected
                         : BigButtonVariant.outlined,
                     onPressed: () => notifier.setLocationManualMode(true),
                   ),
@@ -271,7 +272,11 @@ class OnboardingScreen extends ConsumerWidget {
                   decoration: BoxDecoration(
                     borderRadius: BorderRadius.circular(22),
                     gradient: const LinearGradient(
-                      colors: [Color(0xFF7F1020), Color(0xFFE13A4A)],
+                      colors: [
+                        Color(0xFFEA2846),
+                        Color(0xFFC8102E),
+                        Color(0xFF6E0A19),
+                      ],
                       begin: Alignment.topLeft,
                       end: Alignment.bottomRight,
                     ),
@@ -279,10 +284,12 @@ class OnboardingScreen extends ConsumerWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Icon(
-                        Icons.directions_bus_filled_rounded,
-                        color: Colors.white,
-                        size: 38,
+                      // The white route mark sits directly on the red hero.
+                      const ExcludeSemantics(
+                        child: MarpromLogo(
+                          size: 104,
+                          background: LogoBackground.none,
+                        ),
                       ),
                       const SizedBox(height: 12),
                       Text(

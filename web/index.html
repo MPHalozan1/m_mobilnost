@@ -35,17 +35,156 @@
     }
   </style>
 
-  <!-- Google Maps JavaScript API with Photorealistic 3D Maps library -->
-  <script async src="https://maps.googleapis.com/maps/api/js?key=AIzaSyCJZoVbBxzgU4tt8Z-t4r5wxFM5eUOLdcs&v=beta&libraries=maps3d,marker,geometry&loading=async"></script>
+  <!-- Google Maps JavaScript API with 2D & Photorealistic 3D Maps libraries -->
+  <script async src="https://maps.googleapis.com/maps/api/js?key=AIzaSyCJZoVbBxzgU4tt8Z-t4r5wxFM5eUOLdcs&v=beta&libraries=maps,maps3d,marker,geometry&loading=async"></script>
   <script>
-    window.__marpromBindPolyline = async function(el, coordsJson) {
-      try {
+    window.__marpromWaitForGoogleMaps = async function() {
+      const deadline = Date.now() + 8000;
+      while (Date.now() < deadline) {
         if (window.google && window.google.maps && window.google.maps.importLibrary) {
-          await window.google.maps.importLibrary('maps3d');
+          return true;
         }
-        el.path = JSON.parse(coordsJson);
+        await new Promise((r) => setTimeout(r, 120));
+      }
+      return false;
+    };
+
+    window.__marpromBindPolyline = async function(el, coordsJson, strokeColor, strokeWidth) {
+      try {
+        const ready = await window.__marpromWaitForGoogleMaps();
+        if (!ready) return;
+        await window.google.maps.importLibrary('maps3d');
+        el.coordinates = JSON.parse(coordsJson);
+        if (strokeColor) el.strokeColor = strokeColor;
+        el.strokeWidth = strokeWidth || 6;
+        el.outerColor = '#FFFFFF';
+        el.outerWidth = 2;
+        el.altitudeMode = 'CLAMP_TO_GROUND';
       } catch (e) {
         // Ignore if maps3d library cannot load offline.
+      }
+    };
+
+    window.__marpromSyncRoadMap = async function(hostEl, payloadJson) {
+      try {
+        const payload = JSON.parse(payloadJson);
+        const ready = await window.__marpromWaitForGoogleMaps();
+        if (!ready || !hostEl) return;
+        const { Map, InfoWindow } = await window.google.maps.importLibrary('maps');
+
+        if (!hostEl.__marpromMapState) {
+          const map = new Map(hostEl, {
+            center: payload.center,
+            zoom: payload.zoom || 13.6,
+            mapTypeControl: false,
+            streetViewControl: false,
+            fullscreenControl: false,
+            zoomControl: true,
+            gestureHandling: 'greedy',
+          });
+          hostEl.__marpromMapState = {
+            map: map,
+            polylines: [],
+            markers: [],
+            infoWindow: new InfoWindow(),
+            lastCenterSig: '',
+            lastFitSig: '',
+          };
+        }
+
+        const st = hostEl.__marpromMapState;
+        const centerSig = payload.center.lat.toFixed(5) + ',' + payload.center.lng.toFixed(5) + ',' + (payload.zoom || 13.6);
+        if (!payload.fitBounds && st.lastCenterSig !== centerSig) {
+          st.map.setCenter(payload.center);
+          if (payload.zoom) st.map.setZoom(payload.zoom);
+          st.lastCenterSig = centerSig;
+        }
+
+        for (const p of st.polylines) p.setMap(null);
+        st.polylines = [];
+        for (const m of st.markers) m.setMap(null);
+        st.markers = [];
+
+        const bounds = new google.maps.LatLngBounds();
+        let allPointCount = 0;
+
+        for (const line of (payload.polylines || [])) {
+          if (!line.points || line.points.length < 2) continue;
+          const path = line.points;
+          for (const pt of path) {
+            bounds.extend(pt);
+            allPointCount++;
+          }
+          const w = Number(line.strokeWidth) || 5;
+          const casing = new google.maps.Polyline({
+            path: path,
+            strokeColor: '#FFFFFF',
+            strokeOpacity: 0.92,
+            strokeWeight: w + 3,
+            zIndex: 1,
+            map: st.map,
+          });
+          const mainLine = new google.maps.Polyline({
+            path: path,
+            strokeColor: line.color || '#C8102E',
+            strokeOpacity: 0.96,
+            strokeWeight: w,
+            zIndex: 2,
+            map: st.map,
+          });
+          st.polylines.push(casing, mainLine);
+        }
+
+        for (const mk of (payload.markers || [])) {
+          const pos = { lat: mk.lat, lng: mk.lng };
+          bounds.extend(pos);
+          allPointCount++;
+          let icon;
+          if (mk.isBus) {
+            const rawCode = (mk.shortLabel || (mk.label || '').split(' ')[0] || 'BUS').substring(0, 4);
+            const safeCode = rawCode.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            const bg = mk.color || '#C8102E';
+            const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="38" height="22" viewBox="0 0 38 22">' +
+              '<rect x="1" y="1" width="36" height="20" rx="7" fill="' + bg + '" stroke="#FFFFFF" stroke-width="2"/>' +
+              '<text x="19" y="15" font-family="Arial,sans-serif" font-size="11" font-weight="800" fill="#FFFFFF" text-anchor="middle">' + safeCode + '</text>' +
+              '</svg>';
+            icon = {
+              url: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(svg),
+              scaledSize: new google.maps.Size(38, 22),
+              anchor: new google.maps.Point(19, 11),
+            };
+          } else {
+            icon = {
+              path: google.maps.SymbolPath.CIRCLE,
+              scale: 5.5,
+              fillColor: '#FFFFFF',
+              fillOpacity: 1.0,
+              strokeColor: mk.color || '#C8102E',
+              strokeWeight: 2.5,
+            };
+          }
+          const markerObj = new google.maps.Marker({
+            position: pos,
+            map: st.map,
+            title: mk.label || '',
+            icon: icon,
+            zIndex: mk.isBus ? 20 : 10,
+          });
+          markerObj.addListener('click', function() {
+            if (mk.label) {
+              st.infoWindow.setContent('<div style="font-weight:600;color:#0F172A;padding:2px 4px">' + String(mk.label).replace(/</g, '&lt;') + '</div>');
+              st.infoWindow.open(st.map, markerObj);
+            }
+          });
+          st.markers.push(markerObj);
+        }
+
+        if (payload.fitBounds && allPointCount >= 2 && st.lastFitSig !== payload.fitSignature) {
+          st.map.fitBounds(bounds, 36);
+          st.lastFitSig = payload.fitSignature;
+        }
+      } catch (e) {
+        // Ignore gracefully when Maps API cannot load offline.
       }
     };
   </script>

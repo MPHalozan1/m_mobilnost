@@ -3,12 +3,14 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:m_mobilnost/core/accessibility/semantics_helpers.dart';
+import 'package:m_mobilnost/core/theme/brand_tokens.dart';
 import 'package:m_mobilnost/core/theme/colors.dart';
 import 'package:m_mobilnost/core/utils/distance.dart';
 import 'package:m_mobilnost/core/utils/time_format.dart';
 import 'package:m_mobilnost/core/widgets/occupancy_strip.dart';
 import 'package:m_mobilnost/core/widgets/simulated_data_badge.dart';
 import 'package:m_mobilnost/core/widgets/status_chip.dart';
+import 'package:m_mobilnost/core/widgets/ui_kit.dart';
 import 'package:m_mobilnost/data/models/bus_line.dart';
 import 'package:m_mobilnost/data/models/trip_plan.dart';
 
@@ -71,20 +73,11 @@ class TripOptionCard extends StatelessWidget {
       button: true,
       selected: isSelected,
       label: '$depTime - $arrTime, $summary',
-      child: Card(
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(16),
-          side: BorderSide(
-            color: isSelected ? scheme.primary : scheme.outlineVariant,
-            width: isSelected ? 2.5 : 1.0,
-          ),
-        ),
-        child: InkWell(
-          onTap: onSelect,
-          borderRadius: BorderRadius.circular(16),
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
+      child: SurfaceCard(
+        selected: isSelected,
+        onTap: onSelect,
+        padding: const EdgeInsets.all(16),
+        child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Row(
@@ -99,7 +92,11 @@ class TripOptionCard extends StatelessWidget {
                             style: Theme.of(context)
                                 .textTheme
                                 .headlineSmall
-                                ?.copyWith(color: scheme.primary),
+                                ?.copyWith(
+                                  fontFeatures: const [
+                                    FontFeature.tabularFigures(),
+                                  ],
+                                ),
                           ),
                           const SizedBox(height: 4),
                           Text(
@@ -110,14 +107,44 @@ class TripOptionCard extends StatelessWidget {
                       ),
                     ),
                     const SizedBox(width: 8),
-                    Icon(
-                      isSelected
-                          ? Icons.radio_button_checked_rounded
-                          : Icons.radio_button_unchecked_rounded,
-                      color: isSelected
-                          ? scheme.primary
-                          : scheme.onSurfaceVariant,
-                      size: 28,
+                    AnimatedContainer(
+                      duration: const Duration(milliseconds: 220),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 8,
+                      ),
+                      decoration: BoxDecoration(
+                        color: isSelected
+                            ? scheme.primaryContainer
+                            : MarpromBrand.of(context).subtleFill,
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            isSelected
+                                ? Icons.check_circle_rounded
+                                : Icons.schedule_rounded,
+                            size: 18,
+                            color: isSelected
+                                ? scheme.primary
+                                : scheme.onSurfaceVariant,
+                          ),
+                          const SizedBox(width: 6),
+                          Text(
+                            '${option.totalMinutes} min',
+                            style: Theme.of(context)
+                                .textTheme
+                                .labelLarge
+                                ?.copyWith(
+                                  color: isSelected
+                                      ? scheme.onPrimaryContainer
+                                      : scheme.onSurface,
+                                ),
+                          ),
+                        ],
+                      ),
                     ),
                   ],
                 ),
@@ -191,8 +218,6 @@ class TripOptionCard extends StatelessWidget {
                 ..._buildLegs(context),
               ],
             ),
-          ),
-        ),
       ),
     );
   }

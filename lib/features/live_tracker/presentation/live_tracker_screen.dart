@@ -11,6 +11,7 @@ import 'package:m_mobilnost/core/accessibility/read_aloud.dart';
 import 'package:m_mobilnost/core/accessibility/semantics_helpers.dart';
 import 'package:m_mobilnost/core/layout/breakpoints.dart';
 import 'package:m_mobilnost/core/layout/responsive_builder.dart';
+import 'package:m_mobilnost/core/maps/full_screen_transit_map.dart';
 import 'package:m_mobilnost/core/maps/google_map_3d_widget.dart';
 import 'package:m_mobilnost/core/maps/google_map_models.dart';
 import 'package:m_mobilnost/core/maps/google_web_views.dart';
@@ -70,6 +71,15 @@ class _LiveTrackerScreenState extends ConsumerState<LiveTrackerScreen> {
     _selectedLineId = widget.initialLineId;
     _selectedStopId = widget.initialStopId;
     _selectedVehicleId = widget.initialVehicleId;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || isFlutterTestEnvironment) return;
+      final notifier = ref.read(googleLineRoutesProvider.notifier);
+      if (_selectedLineId != null) {
+        notifier.ensureLineLoaded(_selectedLineId!);
+      } else {
+        notifier.warmAllActiveLines();
+      }
+    });
   }
 
   BusPosition? _resolveTrackedBus({
@@ -1151,6 +1161,7 @@ class _LiveTrackerScreenState extends ConsumerState<LiveTrackerScreen> {
         GoogleMap3DMarkerData(
           id: bus.vehicleId,
           position: bus.position,
+          shortLabel: bus.lineCode,
           label:
               '${bus.lineCode} • ${bus.passengerCount}/${bus.vehicleCapacity} potnikov → ${bus.nextStopName}',
           isBus: true,
@@ -1178,7 +1189,12 @@ class _LiveTrackerScreenState extends ConsumerState<LiveTrackerScreen> {
     return GoogleMap3DWidget(
       key: ValueKey('tracker_3d_${line?.id ?? 'none'}_${direction?.id ?? 'none'}'),
       initialCenter: bus?.position ?? GeoUtils.mariborCenter,
+      initialZoom: 14.0,
+      initialUse3D: false,
       showPresets: false,
+      showStatusPill: false,
+      fitBounds: bus == null || points.length >= 2,
+      fitSignature: '${line?.id}|${direction?.id}|${points.length}',
       activeBusCount: bus != null ? 1 : 0,
       totalPassengers: bus?.passengerCount,
       polylines3D: polylines3D,
@@ -1192,6 +1208,12 @@ class _LiveTrackerScreenState extends ConsumerState<LiveTrackerScreen> {
           ),
       ],
       markers2D: markers,
+      onFullScreenToggle: () => openFullScreenTransitMap(
+        context,
+        initialLineId: line?.id,
+        initialDirectionId: direction?.id,
+        initialVehicleId: bus?.vehicleId,
+      ),
     );
   }
 }

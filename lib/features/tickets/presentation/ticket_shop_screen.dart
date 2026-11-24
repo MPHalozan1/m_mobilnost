@@ -12,6 +12,7 @@ import '../../../core/utils/time_format.dart';
 import '../../../core/widgets/big_button.dart';
 import '../../../core/widgets/state_views.dart';
 import '../../../core/widgets/status_chip.dart';
+import '../../../core/widgets/ui_kit.dart';
 import '../../../data/models/ticket_type.dart';
 import '../../../l10n/app_localizations.dart';
 import '../../account/presentation/account_screen.dart';
@@ -316,15 +317,24 @@ class _TicketTypeCard extends StatelessWidget {
         TimeFormatUtils.formatEur(type.priceEur, locale: localeCode);
     final durationChip = _durationChipLabel(l10n);
 
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
+    return SurfaceCard(
+      onTap: onBuy,
+      padding: const EdgeInsets.all(16),
+      child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                // Drop the decorative icon at very large text sizes so the
+                // title and price keep their room.
+                if (MediaQuery.textScalerOf(context).scale(1.0) <= 1.5) ...[
+                  const IconWell(
+                    icon: Icons.confirmation_number_outlined,
+                    size: 46,
+                  ),
+                  const SizedBox(width: 12),
+                ],
                 Expanded(
                   child: Text(
                     type.localizedTitle(localeCode),
@@ -335,15 +345,16 @@ class _TicketTypeCard extends StatelessWidget {
                 Text(
                   priceText,
                   style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                        color: scheme.primary,
+                        color: scheme.onSurface,
+                        fontFeatures: const [FontFeature.tabularFigures()],
                       ),
                 ),
               ],
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 10),
             Text(
               type.localizedDescription(localeCode),
-              style: Theme.of(context).textTheme.bodyLarge,
+              style: Theme.of(context).textTheme.bodyMedium,
             ),
             const SizedBox(height: 12),
             Wrap(
@@ -375,16 +386,16 @@ class _TicketTypeCard extends StatelessWidget {
                   ),
               ],
             ),
-            const SizedBox(height: 16),
+            const SizedBox(height: 14),
             BigButton(
               icon: Icons.shopping_cart_checkout_rounded,
               label: l10n.ticketsBuyButton,
+              variant: BigButtonVariant.secondary,
               expanded: true,
               onPressed: onBuy,
             ),
           ],
         ),
-      ),
     );
   }
 }

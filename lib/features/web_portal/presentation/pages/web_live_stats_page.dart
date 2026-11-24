@@ -1,10 +1,12 @@
 // Live Maribor 3D Fleet Map + Exact Passenger Count & Ridership Analytics Dashboard.
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../core/accessibility/a11y_settings.dart';
+import '../../../../core/maps/full_screen_transit_map.dart';
 import '../../../../core/maps/google_map_3d_widget.dart';
 import '../../../../core/maps/google_map_models.dart';
 import '../../../../core/maps/google_web_views.dart';
@@ -128,23 +130,34 @@ class _WebLiveStatsPageState extends ConsumerState<WebLiveStatsPage> {
           ),
     ];
 
+    final highlightedLine =
+        highlightedLineId != null ? seedLinesById[highlightedLineId] : null;
+    final highlightedDirection = (highlightedLine != null &&
+            highlightedDirectionId != null)
+        ? highlightedLine.directionById(highlightedDirectionId)
+        : highlightedLine?.directions.firstOrNull;
+
     final markers3D = <GoogleMap3DMarkerData>[
       for (final bus in visibleBuses)
         GoogleMap3DMarkerData(
           id: bus.vehicleId,
           position: bus.position,
+          shortLabel: bus.lineCode,
           label:
               '${bus.lineCode} (${bus.vehicleId}) • ${bus.passengerCount}/${bus.vehicleCapacity} ${ws.passengersWord} (${bus.loadPercent}%) → ${bus.nextStopName}',
           isBus: true,
           color: seedLinesById[bus.lineId]?.color ?? MarpromColors.marpromRed,
         ),
-      for (final stop in seedStops.take(12))
-        GoogleMap3DMarkerData(
-          id: 'stop_${stop.id}',
-          position: stop.position,
-          label: stop.name,
-          isBus: false,
-        ),
+      if (highlightedDirection != null && highlightedLine != null)
+        for (final stopId in highlightedDirection.stopIds)
+          if (seedStopsById[stopId] != null)
+            GoogleMap3DMarkerData(
+              id: 'stop_$stopId',
+              position: seedStopsById[stopId]!.position,
+              label: seedStopsById[stopId]!.name,
+              isBus: false,
+              color: highlightedLine.color,
+            ),
     ];
 
     final polylines2D = <Polyline>[
@@ -397,6 +410,11 @@ class _WebLiveStatsPageState extends ConsumerState<WebLiveStatsPage> {
                           : GoogleMap3DWidget(
                               initialCenter: mapCenter,
                               mapController: _mapController,
+                              initialUse3D: !kIsWeb,
+                              showPresets: kIsWeb,
+                              fitBounds: highlightedLineId != null,
+                              fitSignature:
+                                  '$highlightedLineId|$highlightedDirectionId|${focusedGoogleRoute?.polylinePoints.length ?? 0}',
                               polylines3D: polylines3D,
                               markers3D: markers3D,
                               polylines2D: polylines2D,
@@ -405,6 +423,12 @@ class _WebLiveStatsPageState extends ConsumerState<WebLiveStatsPage> {
                               totalPassengers: visibleBuses.fold<int>(
                                 0,
                                 (sum, b) => sum + b.passengerCount,
+                              ),
+                              onFullScreenToggle: () => openFullScreenTransitMap(
+                                context,
+                                initialLineId: highlightedLineId,
+                                initialDirectionId: highlightedDirectionId,
+                                initialVehicleId: _focusedVehicleId,
                               ),
                             ),
                     ),
@@ -814,6 +838,14 @@ class _WebLiveStatsPageState extends ConsumerState<WebLiveStatsPage> {
                                         onPressed: () {
                                           setState(() => _focusedVehicleId =
                                               bus.vehicleId);
+                                          if (!isFlutterTestEnvironment) {
+                                            ref
+                                                .read(
+                                                  googleLineRoutesProvider
+                                                      .notifier,
+                                                )
+                                                .ensureLineLoaded(bus.lineId);
+                                          }
                                           try {
                                             _mapController.move(
                                               bus.position,

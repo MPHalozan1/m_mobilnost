@@ -8,7 +8,12 @@ import 'package:latlong2/latlong.dart';
 import 'package:m_mobilnost/core/accessibility/a11y_settings.dart';
 import 'package:m_mobilnost/core/accessibility/read_aloud.dart';
 import 'package:m_mobilnost/core/accessibility/semantics_helpers.dart';
+import 'package:m_mobilnost/core/maps/full_screen_transit_map.dart';
+import 'package:m_mobilnost/core/maps/google_map_3d_widget.dart';
+import 'package:m_mobilnost/core/maps/google_map_models.dart';
+import 'package:m_mobilnost/core/maps/google_web_views.dart';
 import 'package:m_mobilnost/core/network/map_tile_provider.dart';
+import 'package:m_mobilnost/core/network/route_geometry_service.dart';
 import 'package:m_mobilnost/core/theme/colors.dart';
 import 'package:m_mobilnost/core/utils/distance.dart';
 import 'package:m_mobilnost/core/utils/geo.dart';
@@ -91,7 +96,7 @@ class _TripPreviewAndStepsState extends ConsumerState<TripPreviewAndSteps> {
                       icon: Icons.map_outlined,
                       label: l10n.mapSwitchToMap,
                       variant: !_showListView
-                          ? BigButtonVariant.primary
+                          ? BigButtonVariant.selected
                           : BigButtonVariant.outlined,
                       onPressed: () => setState(() => _showListView = false),
                     ),
@@ -99,7 +104,7 @@ class _TripPreviewAndStepsState extends ConsumerState<TripPreviewAndSteps> {
                       icon: Icons.view_list_rounded,
                       label: l10n.mapSwitchToList,
                       variant: _showListView
-                          ? BigButtonVariant.primary
+                          ? BigButtonVariant.selected
                           : BigButtonVariant.outlined,
                       onPressed: () => setState(() => _showListView = true),
                     ),
@@ -212,7 +217,7 @@ class _TripPreviewAndStepsState extends ConsumerState<TripPreviewAndSteps> {
   }
 }
 
-class _RouteMapPreview extends StatelessWidget {
+class _RouteMapPreview extends ConsumerWidget {
   const _RouteMapPreview({
     required this.option,
     required this.linesById,
@@ -224,25 +229,52 @@ class _RouteMapPreview extends StatelessWidget {
   final TileProvider? tileProvider;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final scheme = Theme.of(context).colorScheme;
-    final allPoints = <LatLng>[
-      for (final leg in option.legs) ...leg.polyline,
-    ];
-    final hasSpan = _hasCoordinateSpan(allPoints);
+    final googleRoutesMap = ref.watch(googleLineRoutesProvider);
 
-    final polylines = <Polyline>[];
-    final markers = <Marker>[];
-
+    final legPaths = <int, List<LatLng>>{};
+    final allPoints = <LatLng>[];
     for (var i = 0; i < option.legs.length; i++) {
       final leg = option.legs[i];
       if (leg.polyline.isEmpty) continue;
+      List<LatLng> resolved = leg.polyline;
+      if (leg.type == TripLegType.bus &&
+          leg.lineId != null &&
+          leg.directionId != null &&
+          leg.polyline.length >= 2) {
+        final key = '${leg.lineId}|${leg.directionId}';
+        final asyncRoad = ref.watch(routeGeometryProvider(key));
+        final fullRoad =
+            googleRoutesMap[key]?.polylinePoints ?? asyncRoad.valueOrNull;
+        if (fullRoad != null && fullRoad.length >= 2) {
+          resolved = slicePolylineBetweenPoints(
+            fullRoad,
+            leg.polyline.first,
+            leg.polyline.last,
+          );
+        }
+      }
+      legPaths[i] = resolved;
+      allPoints.addAll(resolved);
+    }
+
+    final hasSpan = _hasCoordinateSpan(allPoints);
+    final polylines = <Polyline>[];
+    final polylines3D = <GoogleMap3DPolylineData>[];
+    final markers = <Marker>[];
+    final markers3D = <GoogleMap3DMarkerData>[];
+
+    for (var i = 0; i < option.legs.length; i++) {
+      final leg = option.legs[i];
+      final legPoints = legPaths[i];
+      if (legPoints == null || legPoints.isEmpty) continue;
 
       final isWalk = leg.type == TripLegType.walk;
       final busColor = linesById[leg.lineId]?.color ?? scheme.primary;
       polylines.add(
         Polyline(
-          points: leg.polyline,
+          points: legPoints,
           strokeWidth: isWalk ? 4.0 : 5.5,
           color: isWalk ? scheme.outline : busColor,
           pattern: isWalk
@@ -250,71 +282,149 @@ class _RouteMapPreview extends StatelessWidget {
               : const StrokePattern.solid(),
         ),
       );
+      if (legPoints.length >= 2) {
+        polylines3D.add(
+          GoogleMap3DPolylineData(
+            id: 'leg_${option.id}_$i',
+            points: legPoints,
+            color: isWalk ? scheme.outline : busColor,
+            strokeWidth: isWalk ? 4.0 : 6.5,
+          ),
+        );
+      }
 
       if (i == 0) {
         markers.add(
           _markerPin(
-            point: leg.polyline.first,
+            point: legPoints.first,
             color: scheme.secondary,
             icon: Icons.trip_origin_rounded,
+          ),
+        );
+        markers3D.add(
+          GoogleMap3DMarkerData(
+            id: 'origin_${option.id}',
+            position: legPoints.first,
+            label: leg.fromName,
+            color: scheme.secondary,
           ),
         );
       }
       if (!isWalk) {
         markers.add(
           _markerPin(
-            point: leg.polyline.first,
+            point: legPoints.first,
             color: busColor,
             icon: Icons.directions_bus_rounded,
           ),
         );
         markers.add(
           _markerPin(
-            point: leg.polyline.last,
+            point: legPoints.last,
             color: busColor,
             icon: Icons.flag_outlined,
+          ),
+        );
+        final lineCode = linesById[leg.lineId]?.code ?? leg.lineCode;
+        markers3D.add(
+          GoogleMap3DMarkerData(
+            id: 'board_${option.id}_$i',
+            position: legPoints.first,
+            shortLabel: lineCode,
+            isBus: lineCode != null,
+            label: '${lineCode ?? ''} • ${leg.fromName}',
+            color: busColor,
+          ),
+        );
+        markers3D.add(
+          GoogleMap3DMarkerData(
+            id: 'alight_${option.id}_$i',
+            position: legPoints.last,
+            label: leg.toName,
+            color: busColor,
           ),
         );
       }
       if (i == option.legs.length - 1) {
         markers.add(
           _markerPin(
-            point: leg.polyline.last,
+            point: legPoints.last,
             color: scheme.primary,
             icon: Icons.place_rounded,
+          ),
+        );
+        markers3D.add(
+          GoogleMap3DMarkerData(
+            id: 'dest_${option.id}',
+            position: legPoints.last,
+            label: leg.toName,
+            color: scheme.primary,
           ),
         );
       }
     }
 
+    if (isFlutterTestEnvironment) {
+      return SizedBox(
+        height: 280,
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(14),
+          child: FlutterMap(
+            key: ValueKey('trip_map_${option.id}'),
+            options: hasSpan
+                ? MapOptions(
+                    initialCameraFit: CameraFit.coordinates(
+                      coordinates: allPoints,
+                      padding: const EdgeInsets.all(36),
+                      maxZoom: 16,
+                    ),
+                  )
+                : MapOptions(
+                    initialCenter: allPoints.isNotEmpty
+                        ? allPoints.first
+                        : GeoUtils.mariborCenter,
+                    initialZoom: 14.5,
+                  ),
+            children: [
+              TileLayer(
+                urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                userAgentPackageName: 'si.marprom.m_mobilnost',
+                tileProvider: tileProvider,
+              ),
+              PolylineLayer(polylines: polylines),
+              MarkerLayer(markers: markers),
+            ],
+          ),
+        ),
+      );
+    }
+
+    final firstBusLeg =
+        option.legs.where((l) => l.lineId != null).firstOrNull;
+
     return SizedBox(
       height: 280,
       child: ClipRRect(
         borderRadius: BorderRadius.circular(14),
-        child: FlutterMap(
-          key: ValueKey('trip_map_${option.id}'),
-          options: hasSpan
-              ? MapOptions(
-                  initialCameraFit: CameraFit.coordinates(
-                    coordinates: allPoints,
-                    padding: const EdgeInsets.all(36),
-                    maxZoom: 16,
-                  ),
-                )
-              : MapOptions(
-                  initialCenter:
-                      allPoints.isNotEmpty ? allPoints.first : GeoUtils.mariborCenter,
-                  initialZoom: 14.5,
-                ),
-          children: [
-            TileLayer(
-              urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-              userAgentPackageName: 'si.marprom.m_mobilnost',
-              tileProvider: tileProvider,
-            ),
-            PolylineLayer(polylines: polylines),
-            MarkerLayer(markers: markers),
-          ],
+        child: GoogleMap3DWidget(
+          key: ValueKey('trip_google_map_${option.id}'),
+          initialCenter: allPoints.isNotEmpty
+              ? allPoints[allPoints.length ~/ 2]
+              : GeoUtils.mariborCenter,
+          initialUse3D: false,
+          showPresets: false,
+          showStatusPill: false,
+          fitBounds: hasSpan,
+          fitSignature: '${option.id}|${allPoints.length}',
+          polylines3D: polylines3D,
+          markers3D: markers3D,
+          polylines2D: polylines,
+          markers2D: markers,
+          onFullScreenToggle: () => openFullScreenTransitMap(
+            context,
+            initialLineId: firstBusLeg?.lineId,
+            initialDirectionId: firstBusLeg?.directionId,
+          ),
         ),
       ),
     );

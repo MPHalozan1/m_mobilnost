@@ -28,29 +28,38 @@ abstract final class MarpromColors {
   /// Lighter mobility green for dark mode.
   static const Color mobilityGreenLight = Color(0xFF5CE0B3);
 
-  /// Light mode background surface.
-  static const Color lightBackground = Color(0xFFF5F7FA);
+  /// Brighter, slightly warmer red used for filled actions on dark surfaces.
+  static const Color redOnDark = Color(0xFFE11D3F);
+
+  /// Soft blush tint for selected states and quiet red containers.
+  static const Color blush = Color(0xFFFCEBEE);
+
+  /// Deepest wine tone, used only as the far end of hero gradients.
+  static const Color wine = Color(0xFF5E0A17);
+
+  /// Light mode background surface (warm, faintly neutral off-white).
+  static const Color lightBackground = Color(0xFFF7F5F4);
 
   /// Light mode elevated card surface.
   static const Color lightSurface = Color(0xFFFFFFFF);
 
-  /// Light mode primary text color.
-  static const Color lightOnSurface = Color(0xFF141B24);
+  /// Light mode primary text color (warm ink, not pure black).
+  static const Color lightOnSurface = Color(0xFF1C1719);
 
-  /// Light mode secondary text color (~7.5:1 on white).
-  static const Color lightOnSurfaceVariant = Color(0xFF475467);
+  /// Light mode secondary text color (~7:1 on white).
+  static const Color lightOnSurfaceVariant = Color(0xFF5B5457);
 
-  /// Dark mode background surface.
-  static const Color darkBackground = Color(0xFF0F1620);
+  /// Dark mode background surface (warm graphite).
+  static const Color darkBackground = Color(0xFF121012);
 
   /// Dark mode card surface.
-  static const Color darkSurface = Color(0xFF182230);
+  static const Color darkSurface = Color(0xFF1C191B);
 
   /// Dark mode primary text color.
-  static const Color darkOnSurface = Color(0xFFF1F5F9);
+  static const Color darkOnSurface = Color(0xFFF4EFF0);
 
   /// Dark mode secondary text color.
-  static const Color darkOnSurfaceVariant = Color(0xFFCBD5E1);
+  static const Color darkOnSurfaceVariant = Color(0xFFC9BFC2);
 
   /// High-contrast pure black canvas (WCAG AAA).
   static const Color hcBlack = Color(0xFF000000);

@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../../core/accessibility/a11y_settings.dart';
+import '../../../../core/maps/full_screen_transit_map.dart';
 import '../../../../core/maps/google_map_3d_widget.dart';
 import '../../../../core/maps/google_map_models.dart';
 import '../../../../core/maps/google_web_views.dart';
@@ -116,7 +117,9 @@ class _WebSchedulesPageState extends ConsumerState<WebSchedulesPage> {
 
     final routeKey = '${activeLine.id}|${direction.id}';
     final googleRoute = ref.watch(googleLineRoutesProvider)[routeKey];
+    final routeAsync = ref.watch(routeGeometryProvider(routeKey));
     final routePoints = googleRoute?.polylinePoints ??
+        routeAsync.valueOrNull ??
         direction.roadPolyline ??
         direction.polyline;
 
@@ -427,10 +430,22 @@ class _WebSchedulesPageState extends ConsumerState<WebSchedulesPage> {
                                           activeLine.directions[i].name,
                                         ),
                                         selected: _directionIndex == i,
-                                        onSelected: (_) => setState(() {
-                                          _directionIndex = i;
-                                          _selectedStopId = null;
-                                        }),
+                                        onSelected: (_) {
+                                          setState(() {
+                                            _directionIndex = i;
+                                            _selectedStopId = null;
+                                          });
+                                          if (!isFlutterTestEnvironment) {
+                                            ref
+                                                .read(
+                                                  googleLineRoutesProvider
+                                                      .notifier,
+                                                )
+                                                .ensureLineLoaded(
+                                                  activeLine.id,
+                                                );
+                                          }
+                                        },
                                       ),
                                   ],
                                 ),
@@ -598,13 +613,17 @@ class _WebSchedulesPageState extends ConsumerState<WebSchedulesPage> {
                                 ),
                               ),
                               SizedBox(
-                                height: 260,
+                                height: 360,
                                 child: GoogleMap3DWidget(
                                   initialCenter: routePoints.isNotEmpty
                                       ? routePoints[routePoints.length ~/ 2]
                                       : GeoUtils.mariborCenter,
-                                  initialUse3D: !isFlutterTestEnvironment,
+                                  initialUse3D: false,
                                   showPresets: false,
+                                  showStatusPill: false,
+                                  fitBounds: true,
+                                  fitSignature:
+                                      '${activeLine.id}|${direction.id}|${routePoints.length}',
                                   activeBusCount: busesOnDirection.length,
                                   totalPassengers: busesOnDirection.fold<int>(
                                     0,
@@ -623,6 +642,7 @@ class _WebSchedulesPageState extends ConsumerState<WebSchedulesPage> {
                                       GoogleMap3DMarkerData(
                                         id: bus.vehicleId,
                                         position: bus.position,
+                                        shortLabel: bus.lineCode,
                                         label:
                                             '${bus.lineCode} • ${bus.passengerCount}/${bus.vehicleCapacity} ${ws.passengersWord} → ${bus.nextStopName}',
                                         isBus: true,
@@ -636,6 +656,7 @@ class _WebSchedulesPageState extends ConsumerState<WebSchedulesPage> {
                                               seedStopsById[stopId]!.position,
                                           label: seedStopsById[stopId]!.name,
                                           isBus: false,
+                                          color: activeLine.color,
                                         ),
                                   ],
                                   polylines2D: [
@@ -677,6 +698,12 @@ class _WebSchedulesPageState extends ConsumerState<WebSchedulesPage> {
                                         ),
                                       ),
                                   ],
+                                  onFullScreenToggle: () =>
+                                      openFullScreenTransitMap(
+                                    context,
+                                    initialLineId: activeLine.id,
+                                    initialDirectionId: direction.id,
+                                  ),
                                 ),
                               ),
                             ],

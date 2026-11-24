@@ -7,6 +7,7 @@ import 'package:go_router/go_router.dart';
 import '../../../core/accessibility/a11y_settings.dart';
 import '../../../core/firebase/firebase_bootstrap.dart';
 import '../../../core/theme/colors.dart';
+import '../../../core/widgets/brand_logo.dart';
 import '../../../core/widgets/offline_banner.dart';
 import '../../../data/repositories/repository_providers.dart';
 import '../../account/providers/account_providers.dart';
@@ -221,34 +222,22 @@ class MarpromBrandEmblem extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      width: size,
-      height: size,
-      decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [MarpromColors.marpromRed, MarpromColors.marpromBurgundy],
+    // Same mark as the launcher icon: a route "M" ending in a destination pin.
+    return Semantics(
+      image: true,
+      label: 'M Mobilnost',
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(size * 0.27),
+          boxShadow: [
+            BoxShadow(
+              color: MarpromColors.marpromRed.withValues(alpha: 0.28),
+              blurRadius: 10,
+              offset: const Offset(0, 3),
+            ),
+          ],
         ),
-        borderRadius: BorderRadius.circular(size * 0.26),
-        boxShadow: [
-          BoxShadow(
-            color: MarpromColors.marpromRed.withValues(alpha: 0.28),
-            blurRadius: 10,
-            offset: const Offset(0, 3),
-          ),
-        ],
-      ),
-      alignment: Alignment.center,
-      child: Text(
-        'M',
-        style: TextStyle(
-          color: Colors.white,
-          fontSize: size * 0.56,
-          fontWeight: FontWeight.w900,
-          letterSpacing: -0.5,
-          height: 1.0,
-        ),
+        child: MarpromLogo(size: size),
       ),
     );
   }

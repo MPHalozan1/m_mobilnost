@@ -10,8 +10,11 @@ import '../../../core/accessibility/a11y_settings.dart';
 import '../../../core/accessibility/semantics_helpers.dart';
 import '../../../core/layout/breakpoints.dart';
 import '../../../core/layout/responsive_builder.dart';
+import '../../../core/theme/brand_tokens.dart';
 import '../../../core/utils/time_format.dart';
 import '../../../core/widgets/big_button.dart';
+import '../../../core/widgets/motion.dart';
+import '../../../core/widgets/ui_kit.dart';
 import '../../../core/widgets/state_views.dart';
 import '../../../core/widgets/status_chip.dart';
 import '../../../data/models/ticket.dart';
@@ -90,24 +93,14 @@ class _TicketsWalletScreenState extends ConsumerState<TicketsWalletScreen> {
                     ) ==
                     ScreenLayoutSize.expanded;
 
-            final header = Padding(
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-              child: Wrap(
-                alignment: WrapAlignment.spaceBetween,
-                crossAxisAlignment: WrapCrossAlignment.center,
-                spacing: 12,
-                runSpacing: 12,
-                children: [
-                  Text(
-                    l10n.ticketsTitle,
-                    style: Theme.of(context).textTheme.headlineSmall,
-                  ),
-                  BigButton(
-                    icon: Icons.confirmation_number_outlined,
-                    label: l10n.ticketsBuyButton,
-                    onPressed: () => _openShop(context),
-                  ),
-                ],
+            final header = ScreenTitle(
+              title: l10n.ticketsTitle,
+              eyebrow: l10n.ticketsZoneMaribor,
+              padding: const EdgeInsets.fromLTRB(20, 12, 20, 12),
+              trailing: BigButton(
+                icon: Icons.add_rounded,
+                label: l10n.ticketsBuyButton,
+                onPressed: () => _openShop(context),
               ),
             );
 
@@ -135,15 +128,24 @@ class _TicketsWalletScreenState extends ConsumerState<TicketsWalletScreen> {
                         ),
                       ),
                     ),
-                  TabBar(
-                    isScrollable:
-                        MediaQuery.textScalerOf(context).scale(1.0) > 1.35 ||
-                            layoutSize == ScreenLayoutSize.compact,
-                    tabs: [
-                      Tab(height: 56, text: l10n.ticketsActiveTab),
-                      Tab(height: 56, text: l10n.ticketsTabUpcoming),
-                      Tab(height: 56, text: l10n.ticketsTabExpired),
-                    ],
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
+                    child: Container(
+                      padding: const EdgeInsets.all(4),
+                      decoration: BoxDecoration(
+                        color: MarpromBrand.of(context).subtleFill,
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                      child: TabBar(
+                        isScrollable:
+                            MediaQuery.textScalerOf(context).scale(1.0) > 1.35,
+                        tabs: [
+                          Tab(height: 56, text: l10n.ticketsActiveTab),
+                          Tab(height: 56, text: l10n.ticketsTabUpcoming),
+                          Tab(height: 56, text: l10n.ticketsTabExpired),
+                        ],
+                      ),
+                    ),
                   ),
                   Expanded(
                     child: ticketsAsync.when(
@@ -306,17 +308,20 @@ class _TicketTabList extends StatelessWidget {
     }
 
     return ListView.separated(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 28),
       itemCount: tickets.length,
-      separatorBuilder: (_, _) => const SizedBox(height: 12),
+      separatorBuilder: (_, _) => const SizedBox(height: 16),
       itemBuilder: (context, index) {
         final ticket = tickets[index];
-        return _WalletTicketCard(
-          ticket: ticket,
-          localeCode: localeCode,
-          now: now,
-          selected: selectedTicketId == ticket.id,
-          onTap: () => onSelectTicket(ticket),
+        return FadeSlideIn.staggered(
+          index: index,
+          child: _WalletTicketCard(
+            ticket: ticket,
+            localeCode: localeCode,
+            now: now,
+            selected: selectedTicketId == ticket.id,
+            onTap: () => onSelectTicket(ticket),
+          ),
         );
       },
     );
@@ -341,70 +346,104 @@ class _WalletTicketCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final l10n = context.l10n;
-    final scheme = Theme.of(context).colorScheme;
+    final theme = Theme.of(context);
     final status = ticket.statusAt(now);
     final (chipType, chipLabel) = _statusChipFor(l10n, status);
     final fromStr =
         TimeFormatUtils.formatDateTime24(ticket.validFrom, locale: localeCode);
     final untilStr =
         TimeFormatUtils.formatDateTime24(ticket.validUntil, locale: localeCode);
+    final tone = switch (status) {
+      TicketStatus.active => TicketPassTone.active,
+      TicketStatus.upcoming => TicketPassTone.upcoming,
+      TicketStatus.expired => TicketPassTone.expired,
+    };
 
-    return Card(
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
-        side: BorderSide(
-          color: selected ? scheme.primary : scheme.outlineVariant,
-          width: selected ? 2.5 : 1.0,
-        ),
-      ),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(16),
-        onTap: onTap,
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(minHeight: 72),
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Wrap(
-                  alignment: WrapAlignment.spaceBetween,
-                  crossAxisAlignment: WrapCrossAlignment.center,
-                  spacing: 8,
-                  runSpacing: 8,
+    return TicketPass(
+      tone: tone,
+      selected: selected,
+      onTap: onTap,
+      header: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      ticket.localizedTitle(localeCode),
-                      style: Theme.of(context).textTheme.titleMedium,
+                      'MARPROM',
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: Colors.white.withValues(alpha: 0.85),
+                        letterSpacing: 1.6,
+                      ),
                     ),
-                    StatusChip(type: chipType, label: chipLabel, compact: true),
+                    const SizedBox(height: 4),
+                    Text(
+                      ticket.localizedTitle(localeCode),
+                      style: theme.textTheme.titleLarge?.copyWith(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
                   ],
                 ),
-                const SizedBox(height: 8),
-                Text(
-                  l10n.ticketsValidFromUntil(fromStr, untilStr),
-                  style: Theme.of(context).textTheme.bodyMedium,
+              ),
+              const SizedBox(width: 10),
+              Container(
+                width: 46,
+                height: 46,
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(12),
                 ),
-                if (status == TicketStatus.active) ...[
-                  const SizedBox(height: 6),
-                  Text(
-                    l10n.ticketsRemainingTime(
-                      formatTicketCountdown(ticket.validUntil.difference(now)),
-                    ),
-                    style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                          color: scheme.primary,
-                        ),
-                  ),
-                ],
-                const SizedBox(height: 6),
-                Text(
-                  l10n.ticketsDriverFallbackCode(ticket.driverFallbackCode),
-                  style: Theme.of(context).textTheme.bodyMedium,
+                alignment: Alignment.center,
+                child: const Icon(
+                  Icons.qr_code_2_rounded,
+                  size: 32,
+                  color: Color(0xFF1C1719),
                 ),
-              ],
-            ),
+              ),
+            ],
           ),
-        ),
+          if (status == TicketStatus.active) ...[
+            const SizedBox(height: 14),
+            Text(
+              l10n.ticketsRemainingTime(
+                formatTicketCountdown(ticket.validUntil.difference(now)),
+              ),
+              style: theme.textTheme.titleMedium?.copyWith(
+                color: Colors.white,
+                fontFeatures: const [FontFeature.tabularFigures()],
+              ),
+            ),
+          ],
+        ],
+      ),
+      stub: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Wrap(
+            alignment: WrapAlignment.spaceBetween,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              StatusChip(type: chipType, label: chipLabel, compact: true),
+              Text(
+                l10n.ticketsDriverFallbackCode(ticket.driverFallbackCode),
+                style: theme.textTheme.labelMedium,
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Text(
+            l10n.ticketsValidFromUntil(fromStr, untilStr),
+            style: theme.textTheme.bodyMedium,
+          ),
+        ],
       ),
     );
   }

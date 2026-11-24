@@ -10,6 +10,8 @@ import 'package:m_mobilnost/core/layout/breakpoints.dart';
 import 'package:m_mobilnost/core/layout/responsive_builder.dart';
 import 'package:m_mobilnost/core/maps/google_web_views.dart';
 import 'package:m_mobilnost/core/network/google_routes_service.dart';
+import 'package:m_mobilnost/core/theme/brand_tokens.dart';
+import 'package:m_mobilnost/core/widgets/ui_kit.dart';
 import 'package:m_mobilnost/core/utils/distance.dart';
 import 'package:m_mobilnost/core/utils/time_format.dart';
 import 'package:m_mobilnost/core/widgets/big_button.dart';
@@ -382,11 +384,11 @@ class _TripPlannerScreenState extends ConsumerState<TripPlannerScreen> {
             flex: 5,
             child: ListView(
               children: [
-                Text(
-                  l10n.planTitle,
-                  style: Theme.of(context).textTheme.headlineSmall,
+                ScreenTitle(
+                  title: l10n.planTitle,
+                  eyebrow: 'Marprom',
+                  padding: const EdgeInsets.fromLTRB(4, 4, 4, 14),
                 ),
-                const SizedBox(height: 12),
                 _buildControlsCard(context),
                 const SizedBox(height: 16),
                 _buildResultsList(context, originDisplay, destDisplay),
@@ -441,11 +443,11 @@ class _TripPlannerScreenState extends ConsumerState<TripPlannerScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                l10n.planTitle,
-                style: Theme.of(context).textTheme.headlineSmall,
+              ScreenTitle(
+                title: l10n.planTitle,
+                eyebrow: 'Marprom',
+                padding: const EdgeInsets.fromLTRB(4, 4, 4, 14),
               ),
-              const SizedBox(height: 12),
               _buildControlsCard(context),
               const SizedBox(height: 16),
               _buildResultsList(context, originDisplay, destDisplay),
@@ -471,10 +473,9 @@ class _TripPlannerScreenState extends ConsumerState<TripPlannerScreen> {
     final l10n = context.l10n;
     final scheme = Theme.of(context).colorScheme;
 
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
+    return SurfaceCard(
+      padding: const EdgeInsets.all(16),
+      child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(
@@ -539,27 +540,54 @@ class _TripPlannerScreenState extends ConsumerState<TripPlannerScreen> {
               ),
             ],
             const SizedBox(height: 14),
+            Builder(
+              builder: (context) {
+                final modeButtons = [
+                  for (final mode in TripTimeMode.values)
+                    _TimeModeButton(
+                      label: switch (mode) {
+                        TripTimeMode.leaveNow => l10n.planLeaveNow,
+                        TripTimeMode.departAt => l10n.planDepartAt,
+                        TripTimeMode.arriveBy => l10n.planArriveBy,
+                      },
+                      selected: _timeMode == mode,
+                      onTap: () {
+                        setState(() {
+                          _timeMode = mode;
+                          if (mode != TripTimeMode.leaveNow && !_hasSearched) {
+                            _targetTime = DateTime.now();
+                          }
+                        });
+                      },
+                    ),
+                ];
+                // Equal-width segmented control at normal text sizes; wraps
+                // gracefully when the rider uses very large text.
+                final fitsInRow =
+                    MediaQuery.textScalerOf(context).scale(1.0) <= 1.3;
+                return Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(4),
+                  decoration: BoxDecoration(
+                    color: MarpromBrand.of(context).subtleFill,
+                    borderRadius: BorderRadius.circular(MarpromRadii.md + 4),
+                  ),
+                  child: fitsInRow
+                      ? Row(
+                          children: [
+                            for (final b in modeButtons) Expanded(child: b),
+                          ],
+                        )
+                      : Wrap(spacing: 4, runSpacing: 4, children: modeButtons),
+                );
+              },
+            ),
+            if (_timeMode != TripTimeMode.leaveNow) const SizedBox(height: 10),
             Wrap(
               spacing: 8,
               runSpacing: 8,
+              crossAxisAlignment: WrapCrossAlignment.center,
               children: [
-                for (final mode in TripTimeMode.values)
-                  _TimeModeButton(
-                    label: switch (mode) {
-                      TripTimeMode.leaveNow => l10n.planLeaveNow,
-                      TripTimeMode.departAt => l10n.planDepartAt,
-                      TripTimeMode.arriveBy => l10n.planArriveBy,
-                    },
-                    selected: _timeMode == mode,
-                    onTap: () {
-                      setState(() {
-                        _timeMode = mode;
-                        if (mode != TripTimeMode.leaveNow && !_hasSearched) {
-                          _targetTime = DateTime.now();
-                        }
-                      });
-                    },
-                  ),
                 if (_timeMode != TripTimeMode.leaveNow)
                   ConstrainedBox(
                     constraints: const BoxConstraints(minHeight: 56),
@@ -612,7 +640,6 @@ class _TripPlannerScreenState extends ConsumerState<TripPlannerScreen> {
             ),
           ],
         ),
-      ),
     );
   }
 
@@ -632,19 +659,14 @@ class _TripPlannerScreenState extends ConsumerState<TripPlannerScreen> {
       return const SizedBox.shrink();
     }
     if (_results.isEmpty) {
-      return Card(
-        child: Padding(
+      return SurfaceCard(
           padding: const EdgeInsets.all(20),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Row(
                 children: [
-                  Icon(
-                    Icons.directions_bus_outlined,
-                    size: 32,
-                    color: Theme.of(context).colorScheme.primary,
-                  ),
+                  const IconWell(icon: Icons.directions_bus_outlined),
                   const SizedBox(width: 12),
                   Expanded(
                     child: Text(
@@ -681,7 +703,6 @@ class _TripPlannerScreenState extends ConsumerState<TripPlannerScreen> {
               ),
             ],
           ),
-        ),
       );
     }
 
@@ -748,37 +769,59 @@ class _TimeModeButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final brand = MarpromBrand.of(context);
+    final hc = isHighContrastTheme(context);
+    final isDark = scheme.brightness == Brightness.dark;
+    // Segmented-control look: the selected option is a raised pill.
     return Semantics(
       button: true,
       selected: selected,
       label: label,
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(minHeight: 56, minWidth: 56),
-        child: selected
-            ? FilledButton(
-                onPressed: onTap,
-                style: FilledButton.styleFrom(
-                  minimumSize: const Size(56, 56),
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 12,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOutCubic,
+        decoration: BoxDecoration(
+          color: selected
+              ? (hc
+                  ? scheme.primary
+                  : isDark
+                      ? scheme.primaryContainer
+                      : scheme.surface)
+              : Colors.transparent,
+          borderRadius: BorderRadius.circular(MarpromRadii.md),
+          boxShadow: selected && !hc && !isDark ? brand.cardShadow : const [],
+        ),
+        child: Material(
+          type: MaterialType.transparency,
+          child: InkWell(
+            borderRadius: BorderRadius.circular(MarpromRadii.md),
+            onTap: onTap,
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(minHeight: 56, minWidth: 56),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: Center(
+                  widthFactor: 1,
+                  child: Text(
+                    label,
+                    style: theme.textTheme.labelLarge?.copyWith(
+                      color: selected
+                          ? (hc
+                              ? scheme.onPrimary
+                              : isDark
+                                  ? scheme.onPrimaryContainer
+                                  : scheme.primary)
+                          : scheme.onSurfaceVariant,
+                      fontWeight: selected ? FontWeight.w800 : FontWeight.w600,
+                    ),
                   ),
                 ),
-                child: Text(label),
-              )
-            : OutlinedButton(
-                onPressed: onTap,
-                style: OutlinedButton.styleFrom(
-                  minimumSize: const Size(56, 56),
-                  side: BorderSide(color: scheme.outline),
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 12,
-                  ),
-                ),
-                child: Text(label),
               ),
+            ),
+          ),
+        ),
       ),
     );
   }

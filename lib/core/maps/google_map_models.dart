@@ -11,6 +11,7 @@ class GoogleMap3DMarkerData {
     required this.id,
     required this.position,
     required this.label,
+    this.shortLabel,
     this.isBus = false,
     this.color = const Color(0xFFC8102E),
   });
@@ -23,6 +24,9 @@ class GoogleMap3DMarkerData {
 
   /// Accessible tooltip/title displayed on the 3D pin.
   final String label;
+
+  /// Optional compact line code rendered inside bus pills (e.g. `G1`, `P12`).
+  final String? shortLabel;
 
   /// True for live buses; false for stops or landmarks.
   final bool isBus;

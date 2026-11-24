@@ -1,20 +1,28 @@
 // Unit and widget tests for the 19-line Marprom network, 7-day schedules,
 // Google Maps Embed / Routes API v2, exact passenger stats, and the 6-page Web Portal.
 
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
+import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:m_mobilnost/app/app.dart';
 import 'package:m_mobilnost/core/accessibility/a11y_settings.dart';
+import 'package:m_mobilnost/core/maps/full_screen_transit_map.dart';
 import 'package:m_mobilnost/core/maps/google_maps_config.dart';
 import 'package:m_mobilnost/core/network/connectivity_provider.dart';
 import 'package:m_mobilnost/core/network/google_routes_service.dart';
+import 'package:m_mobilnost/core/network/map_tile_provider.dart';
+import 'package:m_mobilnost/core/network/route_geometry_service.dart';
 import 'package:m_mobilnost/data/repositories/repository_providers.dart';
 import 'package:m_mobilnost/data/seed/seed_lines.dart';
 import 'package:m_mobilnost/data/seed/seed_timetables.dart';
 import 'package:m_mobilnost/data/simulation/bus_simulator.dart';
 import 'package:m_mobilnost/features/live_tracker/domain/fleet_statistics_provider.dart';
+import 'package:m_mobilnost/features/map/data/location_service.dart';
+import 'package:m_mobilnost/features/map/presentation/map_screen.dart';
 import 'package:m_mobilnost/features/web_portal/presentation/marprom_web_scaffold.dart';
 import 'package:m_mobilnost/features/web_portal/presentation/pages/web_download_page.dart';
 import 'package:m_mobilnost/features/web_portal/presentation/pages/web_home_page.dart';
@@ -25,6 +33,56 @@ import 'package:m_mobilnost/features/web_portal/presentation/pages/web_tickets_p
 import 'package:m_mobilnost/l10n/app_localizations.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+final Uint8List _transparentTileBytes = Uint8List.fromList(<int>[
+  0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+  0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+  0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+  0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,
+  0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41,
+  0x54, 0x78, 0x9C, 0x63, 0x00, 0x01, 0x00, 0x00,
+  0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00,
+  0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE,
+  0x42, 0x60, 0x82,
+]);
+
+class _MemoryTileProvider extends TileProvider {
+  @override
+  ImageProvider getImage(TileCoordinates coordinates, TileLayer options) =>
+      MemoryImage(_transparentTileBytes);
+}
+
+class _CountingFakeGoogleRoutesService extends GoogleRoutesService {
+  int callCount = 0;
+
+  @override
+  Future<GoogleRouteResult> computeRouteByCoordinates({
+    required LatLng origin,
+    required LatLng destination,
+    List<LatLng> intermediates = const [],
+    String travelMode = 'DRIVE',
+    bool avoidTolls = false,
+    bool avoidHighways = false,
+    bool includePolyline = true,
+  }) async {
+    callCount++;
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    final pts = <LatLng>[
+      origin,
+      const LatLng(46.555, 15.650),
+      const LatLng(46.540, 15.662),
+      destination,
+    ];
+    return GoogleRouteResult(
+      distanceMeters: 4200,
+      durationSeconds: 610,
+      rawDuration: '610s',
+      polylinePoints: pts,
+      isLiveApi: true,
+      encodedPolyline: GoogleRoutesService.encodeGooglePolyline(pts),
+    );
+  }
+}
 
 Future<ProviderContainer> _createWebTestContainer() async {
   SharedPreferences.setMockInitialValues({'a11y_locale_code': 'sl'});
@@ -176,6 +234,59 @@ void main() {
       expect(fallback.distanceMeters, greaterThan(4000));
       expect(fallback.durationSeconds, greaterThan(300));
     });
+
+    test('GoogleLineRoutesNotifier deduplicates concurrent route loads and slices segments cleanly', () async {
+      SharedPreferences.setMockInitialValues({});
+      final prefs = await SharedPreferences.getInstance();
+      final fakeService = _CountingFakeGoogleRoutesService();
+      final sim = BusSimulator(seed: 42, useSimulatedLive: true);
+      final notifier = GoogleLineRoutesNotifier(
+        routesService: fakeService,
+        simulator: sim,
+        prefs: prefs,
+      );
+      addTearDown(() {
+        notifier.dispose();
+        sim.dispose();
+      });
+
+      final line = seedLines.first;
+      final dir = line.directions.first;
+      final results = await Future.wait([
+        notifier.ensureLineDirectionLoaded(line, dir, forceInTests: true),
+        notifier.ensureLineDirectionLoaded(line, dir, forceInTests: true),
+      ]);
+
+      expect(fakeService.callCount, 1);
+      expect(results[0], isNotNull);
+      expect(results[1], isNotNull);
+      expect(results[0]!.isLiveApi, isTrue);
+      expect(results[0]!.polylinePoints.length, results[1]!.polylinePoints.length);
+
+      const fullRoad = [
+        LatLng(46.560, 15.640),
+        LatLng(46.555, 15.645),
+        LatLng(46.550, 15.650),
+        LatLng(46.545, 15.655),
+        LatLng(46.540, 15.660),
+      ];
+      final forwardSlice = slicePolylineBetweenPoints(
+        fullRoad,
+        const LatLng(46.555, 15.645),
+        const LatLng(46.545, 15.655),
+      );
+      expect(forwardSlice.length, 3);
+      expect(forwardSlice.first.latitude, closeTo(46.555, 1e-4));
+      expect(forwardSlice.last.latitude, closeTo(46.545, 1e-4));
+
+      final reverseSlice = slicePolylineBetweenPoints(
+        fullRoad,
+        const LatLng(46.545, 15.655),
+        const LatLng(46.555, 15.645),
+      );
+      expect(reverseSlice.first.latitude, closeTo(46.545, 1e-4));
+      expect(reverseSlice.last.latitude, closeTo(46.555, 1e-4));
+    });
   });
 
   group('Marprom 6-Page Web Portal Widgets', () {
@@ -280,6 +391,51 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('Prenesi m-mobilnost.apk'), findsOneWidget);
       expect(find.byType(QrImageView), findsNWidgets(2));
+    });
+
+    testWidgets('Mobile MapScreen expands into FullScreenTransitMapPage and closes cleanly', (tester) async {
+      tester.view.physicalSize = const Size(390, 844);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(() {
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
+
+      SharedPreferences.setMockInitialValues({'a11y_locale_code': 'sl'});
+      final prefs = await SharedPreferences.getInstance();
+      final container = ProviderContainer(
+        overrides: [
+          sharedPreferencesProvider.overrideWithValue(prefs),
+          isOfflineProvider.overrideWithValue(false),
+          mapTileProviderProvider.overrideWithValue(_MemoryTileProvider()),
+          liveBusesStreamProvider.overrideWith((ref) => Stream.value(const [])),
+          locationServiceProvider.overrideWithValue(
+            LocationService(gpsProbe: () async => null),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      await tester.pumpWidget(
+        _wrapWebPage(
+          container,
+          const Scaffold(body: MapScreen()),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final toggleBtn = find.byKey(const Key('toggle_fullscreen_map_btn'));
+      expect(toggleBtn, findsOneWidget);
+      await tester.tap(toggleBtn);
+      await tester.pumpAndSettle();
+
+      expect(find.byType(FullScreenTransitMapPage), findsOneWidget);
+      final exitBtn = find.byKey(const Key('exit_fullscreen_map_btn'));
+      expect(exitBtn, findsOneWidget);
+
+      await tester.tap(exitBtn);
+      await tester.pumpAndSettle();
+      expect(find.byType(FullScreenTransitMapPage), findsNothing);
     });
   });
 }

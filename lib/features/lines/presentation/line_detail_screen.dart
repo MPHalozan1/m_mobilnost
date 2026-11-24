@@ -12,6 +12,10 @@ import 'package:m_mobilnost/core/accessibility/read_aloud.dart';
 import 'package:m_mobilnost/core/accessibility/semantics_helpers.dart';
 import 'package:m_mobilnost/core/layout/breakpoints.dart';
 import 'package:m_mobilnost/core/layout/responsive_builder.dart';
+import 'package:m_mobilnost/core/maps/full_screen_transit_map.dart';
+import 'package:m_mobilnost/core/maps/google_map_3d_widget.dart';
+import 'package:m_mobilnost/core/maps/google_map_models.dart';
+import 'package:m_mobilnost/core/maps/google_web_views.dart';
 import 'package:m_mobilnost/core/network/connectivity_provider.dart';
 import 'package:m_mobilnost/core/network/route_geometry_service.dart';
 import 'package:m_mobilnost/core/utils/time_format.dart';
@@ -59,6 +63,10 @@ class _LineDetailScreenState extends ConsumerState<LineDetailScreen> {
   void initState() {
     super.initState();
     _scheduleType = scheduleTypeForDate(DateTime.now());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || isFlutterTestEnvironment) return;
+      ref.read(googleLineRoutesProvider.notifier).ensureLineLoaded(widget.lineId);
+    });
   }
 
   void _speakLineSummary(
@@ -520,10 +528,14 @@ class _LineDetailScreenState extends ConsumerState<LineDetailScreen> {
     required List<BusPosition> buses,
   }) {
     final l10n = context.l10n;
+    final googleRoute = ref.watch(
+      googleLineRoutesProvider.select((m) => m['${line.id}|${direction.id}']),
+    );
     final routeGeometry = ref.watch(
       routeGeometryProvider('${line.id}|${direction.id}'),
     );
-    final points = routeGeometry.valueOrNull ??
+    final points = googleRoute?.polylinePoints ??
+        routeGeometry.valueOrNull ??
         direction.roadPolyline ??
         direction.polyline;
     final fit = points.length >= 2
@@ -618,13 +630,67 @@ class _LineDetailScreenState extends ConsumerState<LineDetailScreen> {
         ),
     ];
 
-    return MariborTransitMap(
-      key: ValueKey('line_map_${line.id}_${direction.id}'),
+    if (isFlutterTestEnvironment) {
+      return MariborTransitMap(
+        key: ValueKey('line_map_${line.id}_${direction.id}'),
+        initialCenter: points.isNotEmpty
+            ? points[points.length ~/ 2]
+            : const LatLng(46.5547, 15.6459),
+        initialCameraFit: fit,
+        polylines: [
+          if (points.length >= 2)
+            Polyline(
+              points: points,
+              strokeWidth: 6,
+              color: line.color,
+            ),
+        ],
+        markers: markers,
+      );
+    }
+
+    return GoogleMap3DWidget(
+      key: ValueKey('line_google_map_${line.id}_${direction.id}'),
       initialCenter: points.isNotEmpty
           ? points[points.length ~/ 2]
           : const LatLng(46.5547, 15.6459),
-      initialCameraFit: fit,
-      polylines: [
+      initialZoom: 13.8,
+      initialUse3D: false,
+      showPresets: false,
+      showStatusPill: false,
+      fitBounds: true,
+      fitSignature: '${line.id}|${direction.id}|${points.length}',
+      polylines3D: [
+        if (points.length >= 2)
+          GoogleMap3DPolylineData(
+            id: '${line.id}_${direction.id}',
+            points: points,
+            color: line.color,
+            strokeWidth: 7,
+          ),
+      ],
+      markers3D: [
+        for (final stopId in direction.stopIds)
+          if (stopsMap[stopId] != null)
+            GoogleMap3DMarkerData(
+              id: 'stop_$stopId',
+              position: stopsMap[stopId]!.position,
+              label: stopsMap[stopId]!.name,
+              isBus: false,
+              color: line.color,
+            ),
+        for (final bus in buses)
+          GoogleMap3DMarkerData(
+            id: bus.vehicleId,
+            position: bus.position,
+            shortLabel: bus.lineCode,
+            label:
+                '${bus.lineCode} • ${bus.passengerCount}/${bus.vehicleCapacity} potnikov → ${bus.nextStopName}',
+            isBus: true,
+            color: line.color,
+          ),
+      ],
+      polylines2D: [
         if (points.length >= 2)
           Polyline(
             points: points,
@@ -632,7 +698,12 @@ class _LineDetailScreenState extends ConsumerState<LineDetailScreen> {
             color: line.color,
           ),
       ],
-      markers: markers,
+      markers2D: markers,
+      onFullScreenToggle: () => openFullScreenTransitMap(
+        context,
+        initialLineId: line.id,
+        initialDirectionId: direction.id,
+      ),
     );
   }
 

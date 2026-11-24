@@ -311,7 +311,7 @@ class _FilterChipButton extends StatelessWidget {
     return BigButton(
       icon: icon,
       label: label,
-      variant: isSelected ? BigButtonVariant.primary : BigButtonVariant.outlined,
+      variant: isSelected ? BigButtonVariant.selected : BigButtonVariant.outlined,
       onPressed: onPressed,
     );
   }

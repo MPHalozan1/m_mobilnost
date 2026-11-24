@@ -10,6 +10,7 @@ import '../../../../core/accessibility/semantics_helpers.dart';
 import '../../../../core/firebase/firebase_bootstrap.dart';
 import '../../../../core/theme/colors.dart';
 import '../../../../core/widgets/big_button.dart';
+import '../../../../core/widgets/ui_kit.dart';
 import '../../../../data/models/payment_method.dart';
 import '../../../../data/repositories/repository_providers.dart';
 import '../../../../l10n/app_localizations.dart';
@@ -179,20 +180,15 @@ class GuestAuthPromptCard extends ConsumerWidget {
     final scheme = Theme.of(context).colorScheme;
     final locale = ref.watch(a11ySettingsProvider).localeCode;
 
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(20),
-        child: Column(
+    return SurfaceCard(
+      padding: const EdgeInsets.all(18),
+      child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(
               children: [
-                Icon(
-                  Icons.person_outline_rounded,
-                  size: 28,
-                  color: scheme.primary,
-                ),
+                const IconWell(icon: Icons.person_outline_rounded, size: 42),
                 const SizedBox(width: 12),
                 Expanded(
                   child: Text(
@@ -202,12 +198,14 @@ class GuestAuthPromptCard extends ConsumerWidget {
                 ),
               ],
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: 10),
             Text(
               l10n.ticketsAuthRequiredBody,
-              style: Theme.of(context).textTheme.bodyLarge,
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
             ),
-            const SizedBox(height: 18),
+            const SizedBox(height: 16),
             GoogleSignInButton(
               label: locale == 'sl'
                   ? 'Prijava z Google računom'
@@ -222,6 +220,7 @@ class GuestAuthPromptCard extends ConsumerWidget {
             BigButton(
               icon: Icons.login_rounded,
               label: l10n.accountSignIn,
+              variant: BigButtonVariant.secondary,
               expanded: true,
               onPressed: onSignInPressed,
             ),
@@ -237,7 +236,6 @@ class GuestAuthPromptCard extends ConsumerWidget {
             ],
           ],
         ),
-      ),
     );
   }
 }

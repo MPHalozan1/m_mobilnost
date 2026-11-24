@@ -11,6 +11,7 @@ import 'package:m_mobilnost/core/accessibility/haptic_cues.dart';
 import 'package:m_mobilnost/core/accessibility/semantics_helpers.dart';
 import 'package:m_mobilnost/core/layout/breakpoints.dart';
 import 'package:m_mobilnost/core/layout/responsive_builder.dart';
+import 'package:m_mobilnost/core/maps/full_screen_transit_map.dart';
 import 'package:m_mobilnost/core/maps/google_map_3d_widget.dart';
 import 'package:m_mobilnost/core/maps/google_map_models.dart';
 import 'package:m_mobilnost/core/maps/google_web_views.dart';
@@ -71,6 +72,15 @@ class _MapScreenState extends ConsumerState<MapScreen> {
   void initState() {
     super.initState();
     _highlightedLineId = widget.initialLineId;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || isFlutterTestEnvironment) return;
+      final notifier = ref.read(googleLineRoutesProvider.notifier);
+      if (widget.initialLineId != null) {
+        notifier.ensureLineLoaded(widget.initialLineId!);
+      } else {
+        notifier.warmAllActiveLines();
+      }
+    });
   }
 
   @override
@@ -101,6 +111,9 @@ class _MapScreenState extends ConsumerState<MapScreen> {
       _highlightedDirectionId = resolvedDirId;
       _highlightedVehicleId = bus?.vehicleId;
     });
+    if (!isFlutterTestEnvironment) {
+      ref.read(googleLineRoutesProvider.notifier).ensureLineLoaded(line.id);
+    }
     if (bus != null) {
       _safeMoveMap(bus.position, 14.2);
     } else {
@@ -265,7 +278,7 @@ class _MapScreenState extends ConsumerState<MapScreen> {
               );
             }
 
-            // Compact / Medium Map view with non-blocking fallback & line overlay.
+            // Compact / Medium Map view with non-blocking bottom overlay & maximum map viewport.
             final isLargeText =
                 MediaQuery.textScalerOf(context).scale(1.0) > 1.35;
             final mapStack = Stack(
@@ -273,31 +286,25 @@ class _MapScreenState extends ConsumerState<MapScreen> {
                 mapContent,
                 if (highlightedLine != null)
                   Positioned(
-                    left: 12,
-                    right: 12,
-                    top: 12,
-                    bottom: 12,
-                    child: Align(
-                      alignment: Alignment.topCenter,
-                      child: SingleChildScrollView(
-                        child: _HighlightedLinePanel(
-                          line: highlightedLine,
-                          directionId: _highlightedDirectionId,
-                          vehicleId: _highlightedVehicleId,
-                          stopsMap: stopsMap,
-                          activeBuses: activeBuses,
-                          useSimulatedLive: settings.useSimulatedLive,
-                          compactOverlay: true,
-                          onDirectionSelected: (dirId) => setState(
-                            () => _highlightedDirectionId = dirId,
-                          ),
-                          onClear: () => setState(() {
-                            _highlightedLineId = null;
-                            _highlightedDirectionId = null;
-                            _highlightedVehicleId = null;
-                          }),
-                        ),
+                    left: 10,
+                    right: 10,
+                    bottom: 10,
+                    child: _HighlightedLinePanel(
+                      line: highlightedLine,
+                      directionId: _highlightedDirectionId,
+                      vehicleId: _highlightedVehicleId,
+                      stopsMap: stopsMap,
+                      activeBuses: activeBuses,
+                      useSimulatedLive: settings.useSimulatedLive,
+                      compactOverlay: true,
+                      onDirectionSelected: (dirId) => setState(
+                        () => _highlightedDirectionId = dirId,
                       ),
+                      onClear: () => setState(() {
+                        _highlightedLineId = null;
+                        _highlightedDirectionId = null;
+                        _highlightedVehicleId = null;
+                      }),
                     ),
                   ),
               ],
@@ -337,7 +344,7 @@ class _MapScreenState extends ConsumerState<MapScreen> {
                 controlsHeader,
                 if (location.showManualFallbackCard)
                   Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+                    padding: const EdgeInsets.fromLTRB(12, 2, 12, 6),
                     child: ManualLocationFallbackCard(
                       stops: stops,
                       selectedStop: location.manualStop,
@@ -346,16 +353,6 @@ class _MapScreenState extends ConsumerState<MapScreen> {
                     ),
                   ),
                 Expanded(child: mapStack),
-                Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 8,
-                  ),
-                  child: Text(
-                    l10n.mapTapStopHint,
-                    style: Theme.of(context).textTheme.bodyMedium,
-                  ),
-                ),
               ],
             );
           },
@@ -392,50 +389,82 @@ class _MapScreenState extends ConsumerState<MapScreen> {
     required UserLocationState location,
     required bool hapticEnabled,
   }) {
+    final compact = !isExpanded;
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+      padding: EdgeInsets.fromLTRB(16, compact ? 6 : 8, 16, compact ? 6 : 8),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Wrap(
-            spacing: 10,
-            runSpacing: 8,
+            spacing: 8,
+            runSpacing: 6,
             crossAxisAlignment: WrapCrossAlignment.center,
             alignment: WrapAlignment.spaceBetween,
             children: [
-              Text(
-                l10n.mapTitle,
-                style: Theme.of(context).textTheme.headlineSmall,
-              ),
-              ConstrainedBox(
-                constraints: const BoxConstraints(minHeight: 56),
-                child: FilledButton.tonalIcon(
-                  onPressed: () {
-                    HapticCues.trigger(
-                      HapticCueType.tap,
-                      enabled: hapticEnabled,
-                    );
-                    setState(() => _showMap = !_showMap);
-                  },
-                  icon: Icon(
-                    _showMap
-                        ? Icons.format_list_bulleted_rounded
-                        : Icons.map_outlined,
-                  ),
-                  label: Text(
-                    _showMap ? l10n.mapSwitchToList : l10n.mapSwitchToMap,
-                  ),
+              Semantics(
+                header: true,
+                child: Text(
+                  l10n.mapTitle,
+                  style: compact
+                      ? Theme.of(context).textTheme.titleLarge
+                      : Theme.of(context).textTheme.headlineMedium,
                 ),
+              ),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  ConstrainedBox(
+                    constraints: BoxConstraints(minHeight: compact ? 44 : 56),
+                    child: FilledButton.tonalIcon(
+                      onPressed: () {
+                        HapticCues.trigger(
+                          HapticCueType.tap,
+                          enabled: hapticEnabled,
+                        );
+                        setState(() => _showMap = !_showMap);
+                      },
+                      icon: Icon(
+                        _showMap
+                            ? Icons.format_list_bulleted_rounded
+                            : Icons.map_outlined,
+                      ),
+                      label: Text(
+                        _showMap ? l10n.mapSwitchToList : l10n.mapSwitchToMap,
+                      ),
+                    ),
+                  ),
+                  if (_showMap) ...[
+                    const SizedBox(width: 6),
+                    IconButton.outlined(
+                      tooltip: 'Celozaslonski zemljevid',
+                      constraints: BoxConstraints(
+                        minWidth: compact ? 44 : 52,
+                        minHeight: compact ? 44 : 52,
+                      ),
+                      icon: const Icon(Icons.fullscreen_rounded),
+                      onPressed: () => openFullScreenTransitMap(
+                        context,
+                        initialLineId: _highlightedLineId,
+                        initialDirectionId: _highlightedDirectionId,
+                        initialVehicleId: _highlightedVehicleId,
+                      ),
+                    ),
+                  ],
+                ],
               ),
             ],
           ),
-          const SizedBox(height: 8),
+          SizedBox(height: compact ? 6 : 8),
           Semantics(
             textField: true,
             label: l10n.a11ySearchField,
             child: TextField(
               controller: _searchController,
               decoration: InputDecoration(
+                isDense: compact,
+                contentPadding: compact
+                    ? const EdgeInsets.symmetric(horizontal: 12, vertical: 10)
+                    : null,
                 hintText: l10n.mapSearchHint,
                 prefixIcon: const Icon(Icons.search_rounded),
                 suffixIcon: _query.isNotEmpty
@@ -443,8 +472,8 @@ class _MapScreenState extends ConsumerState<MapScreen> {
                         icon: const Icon(Icons.clear_rounded),
                         tooltip: l10n.commonClear,
                         constraints: const BoxConstraints(
-                          minWidth: 56,
-                          minHeight: 56,
+                          minWidth: 44,
+                          minHeight: 44,
                         ),
                         onPressed: () {
                           _searchController.clear();
@@ -456,24 +485,29 @@ class _MapScreenState extends ConsumerState<MapScreen> {
               onChanged: (val) => setState(() => _query = val),
             ),
           ),
-          const SizedBox(height: 8),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              _MapToggleChip(
-                icon: Icons.accessible_rounded,
-                label: l10n.mapFilterAccessible,
-                selected: _accessibleOnly,
-                onTap: () => setState(() => _accessibleOnly = !_accessibleOnly),
-              ),
-              _MapToggleChip(
-                icon: Icons.directions_bus_rounded,
-                label: l10n.mapFilterActiveBuses,
-                selected: _showLiveBuses,
-                onTap: () => setState(() => _showLiveBuses = !_showLiveBuses),
-              ),
-            ],
+          SizedBox(height: compact ? 6 : 10),
+          // One horizontally scrolling row of filters keeps the map tall.
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            clipBehavior: Clip.none,
+            child: Row(
+              children: [
+                _MapToggleChip(
+                  icon: Icons.accessible_rounded,
+                  label: l10n.mapFilterAccessible,
+                  selected: _accessibleOnly,
+                  onTap: () =>
+                      setState(() => _accessibleOnly = !_accessibleOnly),
+                ),
+                const SizedBox(width: 8),
+                _MapToggleChip(
+                  icon: Icons.directions_bus_rounded,
+                  label: l10n.mapFilterActiveBuses,
+                  selected: _showLiveBuses,
+                  onTap: () => setState(() => _showLiveBuses = !_showLiveBuses),
+                ),
+              ],
+            ),
           ),
         ],
       ),
@@ -492,6 +526,7 @@ class _MapScreenState extends ConsumerState<MapScreen> {
     required bool useSimulatedLive,
   }) {
     final scheme = Theme.of(context).colorScheme;
+    final googleRoutesMap = ref.watch(googleLineRoutesProvider);
     final highlightedDirection = highlightedLine != null
         ? (_highlightedDirectionId != null
             ? highlightedLine.directionById(_highlightedDirectionId!)
@@ -506,10 +541,15 @@ class _MapScreenState extends ConsumerState<MapScreen> {
             ),
           )
         : const AsyncData<List<LatLng>>(<LatLng>[]);
-    final roadPoints = routeGeometry.valueOrNull ??
+    final roadPoints = (highlightedLine != null && highlightedDirection != null
+            ? googleRoutesMap['${highlightedLine.id}|${highlightedDirection.id}']
+                ?.polylinePoints
+            : null) ??
+        routeGeometry.valueOrNull ??
         highlightedDirection?.roadPolyline ??
         highlightedDirection?.polyline ??
         const <LatLng>[];
+    final activeBusLineIds = {for (final b in activeBuses) b.lineId};
 
     final polylines = <Polyline>[
       if (highlightedLine != null &&
@@ -521,29 +561,37 @@ class _MapScreenState extends ConsumerState<MapScreen> {
           borderStrokeWidth: 2,
           borderColor: Colors.white,
           color: highlightedLine.color,
-        ),
+        )
+      else
+        for (final line in linesMap.values)
+          if (line.directions.isNotEmpty &&
+              (googleRoutesMap.containsKey('${line.id}|${line.directions.first.id}') ||
+                  activeBusLineIds.contains(line.id)))
+            Polyline(
+              points: googleRoutesMap['${line.id}|${line.directions.first.id}']
+                      ?.polylinePoints ??
+                  line.directions.first.roadPolyline ??
+                  line.directions.first.polyline,
+              strokeWidth: activeBusLineIds.contains(line.id) ? 4.2 : 3.0,
+              color: line.color.withValues(alpha: 0.72),
+            ),
     ];
 
     final markers = <Marker>[
       Marker(
         point: location.effectivePosition,
-        width: 56,
-        height: 56,
+        width: 48,
+        height: 48,
         child: Semantics(
           label: location.isGps ? l10n.mapCenterOnMe : l10n.mapManualCenter,
           child: Center(
             child: Container(
-              width: 24,
-              height: 24,
+              width: 18,
+              height: 18,
               decoration: BoxDecoration(
                 color: scheme.primary,
                 shape: BoxShape.circle,
-                border: Border.all(color: Colors.white, width: 3),
-              ),
-              child: const Icon(
-                Icons.person_pin_circle_rounded,
-                size: 14,
-                color: Colors.white,
+                border: Border.all(color: Colors.white, width: 2.5),
               ),
             ),
           ),
@@ -552,8 +600,8 @@ class _MapScreenState extends ConsumerState<MapScreen> {
       for (final item in filteredStops)
         Marker(
           point: item.stop.position,
-          width: 56,
-          height: 56,
+          width: 48,
+          height: 48,
           child: Semantics(
             button: true,
             label: item.stop.name,
@@ -561,17 +609,12 @@ class _MapScreenState extends ConsumerState<MapScreen> {
               onTap: () => _openStopBottomSheet(context, item.stop, linesMap),
               child: Center(
                 child: Container(
-                  width: 22,
-                  height: 22,
+                  width: 12,
+                  height: 12,
                   decoration: BoxDecoration(
                     color: scheme.surface,
                     shape: BoxShape.circle,
-                    border: Border.all(color: scheme.primary, width: 3),
-                  ),
-                  child: Icon(
-                    Icons.directions_bus_filled_rounded,
-                    size: 12,
-                    color: scheme.primary,
+                    border: Border.all(color: scheme.primary, width: 2.5),
                   ),
                 ),
               ),
@@ -581,8 +624,8 @@ class _MapScreenState extends ConsumerState<MapScreen> {
       for (final bus in activeBuses)
         Marker(
           point: bus.position,
-          width: 68,
-          height: 56,
+          width: 46,
+          height: 24,
           child: Semantics(
             button: true,
             label: '${l10n.linesBadge(bus.lineCode)}: ${bus.nextStopName}',
@@ -601,32 +644,21 @@ class _MapScreenState extends ConsumerState<MapScreen> {
                 child: Container(
                   padding: const EdgeInsets.symmetric(
                     horizontal: 6,
-                    vertical: 4,
+                    vertical: 3,
                   ),
                   decoration: BoxDecoration(
                     color: linesMap[bus.lineId]?.color ?? scheme.secondary,
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(color: Colors.white, width: 2),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.white, width: 1.8),
                   ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Icon(
-                        Icons.directions_bus_rounded,
-                        size: 13,
-                        color: Colors.white,
-                      ),
-                      const SizedBox(width: 3),
-                      Text(
-                        bus.lineCode,
-                        textScaler: TextScaler.noScaling,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 11,
-                          fontWeight: FontWeight.w800,
-                        ),
-                      ),
-                    ],
+                  child: Text(
+                    bus.lineCode,
+                    textScaler: TextScaler.noScaling,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 10.5,
+                      fontWeight: FontWeight.w800,
+                    ),
                   ),
                 ),
               ),
@@ -644,7 +676,29 @@ class _MapScreenState extends ConsumerState<MapScreen> {
           points: roadPoints,
           color: highlightedLine.color,
           strokeWidth: 7.0,
-        ),
+        )
+      else
+        for (final line in linesMap.values)
+          if (line.directions.isNotEmpty &&
+              (googleRoutesMap.containsKey('${line.id}|${line.directions.first.id}') ||
+                  activeBusLineIds.contains(line.id)))
+            GoogleMap3DPolylineData(
+              id: line.id,
+              points: googleRoutesMap['${line.id}|${line.directions.first.id}']
+                      ?.polylinePoints ??
+                  line.directions.first.roadPolyline ??
+                  line.directions.first.polyline,
+              color: line.color,
+              strokeWidth: activeBusLineIds.contains(line.id) ? 4.5 : 3.2,
+            ),
+    ];
+
+    final googleStops = <BusStop>[
+      if (highlightedLine != null && highlightedDirection != null)
+        for (final stopId in highlightedDirection.stopIds)
+          if (stopsMap[stopId] != null) stopsMap[stopId]!
+      else if (_query.trim().isNotEmpty)
+        for (final item in filteredStops.take(15)) item.stop,
     ];
 
     final markers3D = <GoogleMap3DMarkerData>[
@@ -652,17 +706,19 @@ class _MapScreenState extends ConsumerState<MapScreen> {
         GoogleMap3DMarkerData(
           id: bus.vehicleId,
           position: bus.position,
+          shortLabel: bus.lineCode,
           label:
               '${bus.lineCode} • ${bus.passengerCount}/${bus.vehicleCapacity} potnikov (${bus.loadPercent}%) → ${bus.nextStopName}',
           isBus: true,
           color: linesMap[bus.lineId]?.color ?? scheme.secondary,
         ),
-      for (final item in filteredStops.take(20))
+      for (final stop in googleStops)
         GoogleMap3DMarkerData(
-          id: 'stop_${item.stop.id}',
-          position: item.stop.position,
-          label: item.stop.name,
+          id: 'stop_${stop.id}',
+          position: stop.position,
+          label: stop.name,
           isBus: false,
+          color: highlightedLine?.color ?? scheme.primary,
         ),
     ];
 
@@ -672,7 +728,13 @@ class _MapScreenState extends ConsumerState<MapScreen> {
     return GoogleMap3DWidget(
       initialCenter: location.effectivePosition,
       mapController: _mapController,
-      initialUse3D: !isFlutterTestEnvironment,
+      initialUse3D: false,
+      showPresets: false,
+      showStatusPill: false,
+      fitBounds: highlightedLine != null,
+      fitSignature: highlightedLine != null && highlightedDirection != null
+          ? '${highlightedLine.id}|${highlightedDirection.id}|${roadPoints.length}'
+          : '',
       polylines3D: polylines3D,
       markers3D: markers3D,
       polylines2D: polylines,
@@ -685,6 +747,12 @@ class _MapScreenState extends ConsumerState<MapScreen> {
         ref.invalidate(userLocationProvider);
         _safeMoveMap(location.effectivePosition, 14.5);
       },
+      onFullScreenToggle: () => openFullScreenTransitMap(
+        context,
+        initialLineId: _highlightedLineId,
+        initialDirectionId: _highlightedDirectionId,
+        initialVehicleId: _highlightedVehicleId,
+      ),
     );
   }
 
@@ -804,10 +872,15 @@ class _MapToggleChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return ConstrainedBox(
-      constraints: const BoxConstraints(minHeight: 56),
+      constraints: const BoxConstraints(minHeight: 42),
       child: selected
-          ? FilledButton.icon(
+          ? FilledButton.tonalIcon(
               onPressed: onTap,
+              style: FilledButton.styleFrom(
+                backgroundColor: Theme.of(context).colorScheme.primaryContainer,
+                foregroundColor:
+                    Theme.of(context).colorScheme.onPrimaryContainer,
+              ),
               icon: Icon(icon),
               label: Text(label),
             )
@@ -1049,7 +1122,7 @@ class _HighlightedLinePanel extends StatelessWidget {
               l10n.linesDirectionTo(direction.name),
               style: Theme.of(context).textTheme.bodyMedium,
             ),
-            if (line.directions.length > 1) ...[
+            if (line.directions.length > 1 && !compactOverlay) ...[
               const SizedBox(height: 8),
               Wrap(
                 spacing: 8,
@@ -1071,21 +1144,8 @@ class _HighlightedLinePanel extends StatelessWidget {
                 ],
               ),
             ],
-            const SizedBox(height: 10),
-            if (compactOverlay)
-              ConstrainedBox(
-                constraints: const BoxConstraints(maxHeight: 150),
-                child: ListView.separated(
-                  shrinkWrap: true,
-                  itemCount: arrivalEstimates.length,
-                  separatorBuilder: (_, _) => const Divider(height: 1),
-                  itemBuilder: (context, index) => _buildArrivalRow(
-                    context,
-                    arrivalEstimates[index],
-                  ),
-                ),
-              )
-            else
+            if (!compactOverlay) ...[
+              const SizedBox(height: 10),
               Column(
                 children: [
                   for (var i = 0; i < arrivalEstimates.length; i++) ...[
@@ -1095,6 +1155,7 @@ class _HighlightedLinePanel extends StatelessWidget {
                   ],
                 ],
               ),
+            ],
             const SizedBox(height: 10),
             BigButton(
               icon: Icons.gps_fixed_rounded,

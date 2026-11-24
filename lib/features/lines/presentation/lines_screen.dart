@@ -11,6 +11,7 @@ import 'package:m_mobilnost/core/layout/responsive_builder.dart';
 import 'package:m_mobilnost/core/widgets/offline_banner.dart';
 import 'package:m_mobilnost/core/widgets/simulated_data_badge.dart';
 import 'package:m_mobilnost/core/widgets/state_views.dart';
+import 'package:m_mobilnost/core/widgets/ui_kit.dart';
 import 'package:m_mobilnost/data/models/bus_line.dart';
 
 import '../data/transit_providers.dart';
@@ -205,8 +206,13 @@ class _FilterTabButton extends StatelessWidget {
     return ConstrainedBox(
       constraints: const BoxConstraints(minHeight: 56),
       child: selected
-          ? FilledButton.icon(
+          ? FilledButton.tonalIcon(
               onPressed: onTap,
+              style: FilledButton.styleFrom(
+                backgroundColor: Theme.of(context).colorScheme.primaryContainer,
+                foregroundColor:
+                    Theme.of(context).colorScheme.onPrimaryContainer,
+              ),
               icon: Icon(icon),
               label: Text(label),
             )
@@ -239,13 +245,10 @@ class _LineSummaryCard extends StatelessWidget {
     final primaryDirection =
         line.directions.isNotEmpty ? line.directions.first.name : '';
 
-    return Card(
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(16),
-        child: Padding(
-          padding: const EdgeInsets.all(14),
-          child: Row(
+    return SurfaceCard(
+      onTap: onTap,
+      padding: const EdgeInsets.all(14),
+      child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Expanded(
@@ -335,8 +338,6 @@ class _LineSummaryCard extends StatelessWidget {
               ),
             ],
           ),
-        ),
-      ),
     );
   }
 }

@@ -14,15 +14,64 @@ import '../../data/seed/seed_lines.dart';
 import '../../data/simulation/bus_simulator.dart';
 import '../accessibility/a11y_settings.dart';
 import '../maps/google_web_views.dart';
+import '../utils/geo.dart';
 import 'google_routes_service.dart';
 
-const String _routeCachePrefix = 'marprom_groute_v3_';
+const String _routeCachePrefix = 'marprom_groute_v4_';
+
+/// Slices the nearest contiguous segment between [start] and [end] along a road [polyline].
+List<LatLng> slicePolylineBetweenPoints(
+  List<LatLng> polyline,
+  LatLng start,
+  LatLng end,
+) {
+  if (polyline.length < 2) {
+    return [start, end];
+  }
+
+  var startIdx = 0;
+  var endIdx = polyline.length - 1;
+  var bestStartDist = double.infinity;
+  var bestEndDist = double.infinity;
+
+  for (var i = 0; i < polyline.length; i++) {
+    final dStart = GeoUtils.haversineMeters(polyline[i], start);
+    if (dStart < bestStartDist) {
+      bestStartDist = dStart;
+      startIdx = i;
+    }
+    final dEnd = GeoUtils.haversineMeters(polyline[i], end);
+    if (dEnd < bestEndDist) {
+      bestEndDist = dEnd;
+      endIdx = i;
+    }
+  }
+
+  final segment = startIdx <= endIdx
+      ? polyline.sublist(startIdx, endIdx + 1)
+      : polyline.sublist(endIdx, startIdx + 1).reversed.toList(growable: true);
+
+  final result = List<LatLng>.from(segment);
+  if (result.isEmpty) {
+    return [start, end];
+  }
+  if (GeoUtils.haversineMeters(result.first, start) > 25) {
+    result.insert(0, start);
+  }
+  if (GeoUtils.haversineMeters(result.last, end) > 25) {
+    result.add(end);
+  }
+  if (result.length < 2) {
+    return [start, end];
+  }
+  return result;
+}
 
 /// Loads accurate drivable road geometry for a single seeded Marprom bus direction
 /// (`'lineId|directionId'`) using Google Routes API v2 first, then OSRM, then dense fallback.
 final routeGeometryProvider =
     FutureProvider.family<List<LatLng>, String>((ref, key) async {
-  final cached = ref.read(googleLineRoutesProvider)[key];
+  final cached = ref.watch(googleLineRoutesProvider.select((m) => m[key]));
   if (cached != null && cached.polylinePoints.length >= 2) {
     return cached.polylinePoints;
   }
@@ -99,7 +148,7 @@ class GoogleLineRoutesNotifier
   final GoogleRoutesService _routesService;
   final BusSimulator _simulator;
   final SharedPreferences? _prefs;
-  final Set<String> _inFlight = {};
+  final Map<String, Future<GoogleRouteResult?>> _inFlight = {};
   bool _warmedAll = false;
 
   void _hydrateFromCache() {
@@ -150,7 +199,7 @@ class GoogleLineRoutesNotifier
   }
 
   /// Resolves a single [line] & [direction] via Google Routes API v2 (`computeRoutes`)
-  /// and caches it locally + inside [BusSimulator].
+  /// and caches it locally + inside [BusSimulator], deduplicating concurrent requests.
   Future<GoogleRouteResult?> ensureLineDirectionLoaded(
     BusLine line,
     LineDirection direction, {
@@ -164,46 +213,71 @@ class GoogleLineRoutesNotifier
     if (isFlutterTestEnvironment && !forceInTests) {
       return existing;
     }
-    if (_inFlight.contains(key)) {
-      return existing;
+    final pending = _inFlight[key];
+    if (pending != null) {
+      return pending;
     }
     if (direction.polyline.length < 2) return null;
 
-    _inFlight.add(key);
+    final future = _loadDirectionInternal(line, direction, key);
+    _inFlight[key] = future;
     try {
-      final result = await _routesService.computeRouteByCoordinates(
+      return await future;
+    } finally {
+      if (identical(_inFlight[key], future)) {
+        _inFlight.remove(key);
+      }
+    }
+  }
+
+  Future<GoogleRouteResult?> _loadDirectionInternal(
+    BusLine line,
+    LineDirection direction,
+    String key,
+  ) async {
+    final intermediates = direction.polyline.length > 2
+        ? direction.polyline.sublist(1, direction.polyline.length - 1)
+        : const <LatLng>[];
+
+    var result = await _routesService.computeRouteByCoordinates(
+      origin: direction.polyline.first,
+      destination: direction.polyline.last,
+      intermediates: intermediates,
+      includePolyline: true,
+    );
+
+    if (!result.isLiveApi) {
+      await Future<void>.delayed(const Duration(milliseconds: 350));
+      result = await _routesService.computeRouteByCoordinates(
         origin: direction.polyline.first,
         destination: direction.polyline.last,
-        intermediates: direction.polyline.length > 2
-            ? direction.polyline.sublist(1, direction.polyline.length - 1)
-            : const [],
+        intermediates: intermediates,
         includePolyline: true,
       );
-
-      final resolvedPoints = result.polylinePoints.length >= 2
-          ? result.polylinePoints
-          : _densify(direction.polyline);
-      final normalized = GoogleRouteResult(
-        distanceMeters: result.distanceMeters,
-        durationSeconds: result.durationSeconds,
-        rawDuration: result.rawDuration,
-        polylinePoints: resolvedPoints,
-        isLiveApi: result.isLiveApi,
-        encodedPolyline: result.encodedPolyline ??
-            GoogleRoutesService.encodeGooglePolyline(resolvedPoints),
-      );
-
-      state = {...state, key: normalized};
-
-      if (normalized.isLiveApi && resolvedPoints.length >= 2) {
-        _simulator.setGoogleRouteGeometries({key: resolvedPoints});
-        await _persistEntry(key, normalized);
-      }
-
-      return normalized;
-    } finally {
-      _inFlight.remove(key);
     }
+
+    final resolvedPoints = result.polylinePoints.length >= 2
+        ? result.polylinePoints
+        : _densify(direction.polyline);
+    final normalized = GoogleRouteResult(
+      distanceMeters: result.distanceMeters,
+      durationSeconds: result.durationSeconds,
+      rawDuration: result.rawDuration,
+      polylinePoints: resolvedPoints,
+      isLiveApi: result.isLiveApi,
+      encodedPolyline: result.encodedPolyline ??
+          GoogleRoutesService.encodeGooglePolyline(resolvedPoints),
+    );
+
+    if (!mounted) return normalized;
+    state = {...state, key: normalized};
+
+    if (normalized.isLiveApi && resolvedPoints.length >= 2) {
+      _simulator.setGoogleRouteGeometries({key: resolvedPoints});
+      await _persistEntry(key, normalized);
+    }
+
+    return normalized;
   }
 
   /// Hydrates Google Routes API street polylines for both directions of [lineId].
