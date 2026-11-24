@@ -1,4 +1,4 @@
-// Ticket shop screen allowing guest browsing and auth-gated ticket purchase.
+// Ticket shop screen allowing guest browsing, fare category filtering, and NFC/QR checkout.
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -7,6 +7,7 @@ import '../../../core/accessibility/a11y_settings.dart';
 import '../../../core/accessibility/semantics_helpers.dart';
 import '../../../core/layout/breakpoints.dart';
 import '../../../core/layout/responsive_builder.dart';
+import '../../../core/theme/colors.dart';
 import '../../../core/utils/time_format.dart';
 import '../../../core/widgets/big_button.dart';
 import '../../../core/widgets/state_views.dart';
@@ -19,13 +20,20 @@ import '../../account/providers/account_providers.dart';
 import '../providers/ticket_providers.dart';
 import 'ticket_checkout_screen.dart';
 
-/// Displays all Marprom EUR ticket types for browsing and starting checkout.
-class TicketShopScreen extends ConsumerWidget {
+/// Displays all official Marprom EUR ticket types with category filters and NFC/QR checkout.
+class TicketShopScreen extends ConsumerStatefulWidget {
   /// Creates a [TicketShopScreen].
   const TicketShopScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<TicketShopScreen> createState() => _TicketShopScreenState();
+}
+
+class _TicketShopScreenState extends ConsumerState<TicketShopScreen> {
+  TicketFareGroup? _selectedGroup;
+
+  @override
+  Widget build(BuildContext context) {
     final l10n = context.l10n;
     final settings = ref.watch(a11ySettingsProvider);
     final typesAsync = ref.watch(ticketTypesProvider);
@@ -48,12 +56,63 @@ class TicketShopScreen extends ConsumerWidget {
             );
           }
 
+          final filtered = _selectedGroup == null
+              ? types
+              : types
+                  .where((t) => t.fareGroup == _selectedGroup)
+                  .toList(growable: false);
+
           return ListView(
             children: [
               ResponsiveContentContainer(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
+                    Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(18),
+                        gradient: const LinearGradient(
+                          colors: [
+                            MarpromColors.marpromCharcoal,
+                            MarpromColors.marpromBurgundy,
+                          ],
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                        ),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: const [
+                          Row(
+                            children: [
+                              Icon(Icons.nfc_rounded, color: Colors.white),
+                              SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  'Marprom NFC & QR vozovnice (od 1. 6. 2026)',
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.w800,
+                                    fontSize: 15,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          SizedBox(height: 6),
+                          Text(
+                            'Na avtobusih Marprom plačujete brez gotovine: z bančno kartico ali telefonom (NFC HCE) ter QR kodo. Enkratna vožnja vključuje 75 min brezplačnega prestopanja.',
+                            style: TextStyle(
+                              color: Color(0xFFE2E8F0),
+                              fontSize: 12.5,
+                              height: 1.4,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 12),
                     const DemoPaymentBanner(),
                     if (user != null &&
                         (user.isYouthEligible || user.isSeniorEligible)) ...[
@@ -75,6 +134,60 @@ class TicketShopScreen extends ConsumerWidget {
                         ],
                       ),
                     ],
+                    const SizedBox(height: 14),
+                    SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      child: Row(
+                        children: [
+                          ChoiceChip(
+                            label: Text(l10n.commonAll),
+                            selected: _selectedGroup == null,
+                            onSelected: (_) =>
+                                setState(() => _selectedGroup = null),
+                          ),
+                          const SizedBox(width: 8),
+                          ChoiceChip(
+                            label: const Text('Enkratne & 10x'),
+                            selected: _selectedGroup ==
+                                TicketFareGroup.singleAndCoupon,
+                            onSelected: (_) => setState(
+                              () => _selectedGroup =
+                                  TicketFareGroup.singleAndCoupon,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          ChoiceChip(
+                            label: const Text('Dnevne & večdnevne'),
+                            selected: _selectedGroup ==
+                                TicketFareGroup.dailyAndMultiDay,
+                            onSelected: (_) => setState(
+                              () => _selectedGroup =
+                                  TicketFareGroup.dailyAndMultiDay,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          ChoiceChip(
+                            label: const Text('Mesečne / IJPP / Letne'),
+                            selected: _selectedGroup ==
+                                TicketFareGroup.monthlyAndAnnual,
+                            onSelected: (_) => setState(
+                              () => _selectedGroup =
+                                  TicketFareGroup.monthlyAndAnnual,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          ChoiceChip(
+                            label: const Text('P+R'),
+                            selected:
+                                _selectedGroup == TicketFareGroup.parkAndRide,
+                            onSelected: (_) => setState(
+                              () =>
+                                  _selectedGroup = TicketFareGroup.parkAndRide,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                     const SizedBox(height: 16),
                     ResponsiveBuilder(
                       builder: (context, layoutSize, constraints) {
@@ -83,7 +196,7 @@ class TicketShopScreen extends ConsumerWidget {
                         if (columns == 1) {
                           return Column(
                             children: [
-                              for (final type in types) ...[
+                              for (final type in filtered) ...[
                                 _TicketTypeCard(
                                   type: type,
                                   localeCode: settings.localeCode,
@@ -104,7 +217,7 @@ class TicketShopScreen extends ConsumerWidget {
                           spacing: 16,
                           runSpacing: 16,
                           children: [
-                            for (final type in types)
+                            for (final type in filtered)
                               SizedBox(
                                 width: cardWidth,
                                 child: _TicketTypeCard(

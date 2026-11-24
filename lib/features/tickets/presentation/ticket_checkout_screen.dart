@@ -51,6 +51,8 @@ class _TicketCheckoutScreenState extends ConsumerState<TicketCheckoutScreen> {
   DateTime _chosenStartTime = DateTime.now().add(const Duration(hours: 1));
   bool _guardianConfirmed = false;
   String? _selectedPaymentMethodId;
+  bool _useBuiltInNfcPay = false;
+  bool _nfcTapAuthorized = false;
   bool _submitting = false;
   String? _checkoutError;
   List<Ticket>? _purchasedTickets;
@@ -491,7 +493,101 @@ class _TicketCheckoutScreenState extends ConsumerState<TicketCheckoutScreen> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             const DemoPaymentBanner(),
-            const SizedBox(height: 16),
+            const SizedBox(height: 14),
+            Card(
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+                side: BorderSide(
+                  color: _useBuiltInNfcPay
+                      ? MarpromColors.marpromRed
+                      : Theme.of(context).colorScheme.outlineVariant,
+                  width: _useBuiltInNfcPay ? 2 : 1,
+                ),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: MarpromColors.marpromRed
+                                .withValues(alpha: 0.12),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: const Icon(
+                            Icons.contactless_rounded,
+                            color: MarpromColors.marpromRed,
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        const Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Plačilo z vgrajenim NFC čipom telefona',
+                                style: TextStyle(
+                                  fontWeight: FontWeight.w800,
+                                  fontSize: 15,
+                                ),
+                              ),
+                              Text(
+                                'Brezstična bančna kartica / Google Pay / Apple Pay prek NFC čipa',
+                                style: TextStyle(fontSize: 12.5),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    Wrap(
+                      spacing: 10,
+                      runSpacing: 8,
+                      children: [
+                        FilledButton.icon(
+                          style: FilledButton.styleFrom(
+                            backgroundColor: _nfcTapAuthorized
+                                ? MarpromColors.mobilityGreen
+                                : MarpromColors.marpromRed,
+                            foregroundColor: Colors.white,
+                          ),
+                          onPressed: () {
+                            final cardOrWallet = methods.firstWhere(
+                              (m) =>
+                                  m.type == PaymentMethodType.card ||
+                                  m.type == PaymentMethodType.googlePay ||
+                                  m.type == PaymentMethodType.applePay,
+                              orElse: () => methods.first,
+                            );
+                            setState(() {
+                              _useBuiltInNfcPay = true;
+                              _nfcTapAuthorized = true;
+                              _selectedPaymentMethodId = cardOrWallet.id;
+                            });
+                          },
+                          icon: Icon(
+                            _nfcTapAuthorized
+                                ? Icons.verified_rounded
+                                : Icons.nfc_rounded,
+                          ),
+                          label: Text(
+                            _nfcTapAuthorized
+                                ? 'NFC čip potrjen za plačilo'
+                                : 'Aktiviraj plačilo z NFC čipom',
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 14),
             if (methods.isEmpty)
               EmptyStateView(
                 icon: Icons.credit_card_off_outlined,
@@ -502,7 +598,10 @@ class _TicketCheckoutScreenState extends ConsumerState<TicketCheckoutScreen> {
                 groupValue: effectiveId,
                 onChanged: (value) {
                   if (value != null) {
-                    setState(() => _selectedPaymentMethodId = value);
+                    setState(() {
+                      _selectedPaymentMethodId = value;
+                      _useBuiltInNfcPay = false;
+                    });
                   }
                 },
                 child: Column(

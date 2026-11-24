@@ -116,6 +116,7 @@ class GoogleRoutesService {
     bool avoidHighways = false,
     bool includePolyline = true,
   }) async {
+    final sampledIntermediates = _sampleIntermediates(intermediates, maxCount: 23);
     final body = <String, dynamic>{
       'origin': {
         'location': {
@@ -133,9 +134,9 @@ class GoogleRoutesService {
           },
         },
       },
-      if (intermediates.isNotEmpty)
+      if (sampledIntermediates.isNotEmpty)
         'intermediates': [
-          for (final point in intermediates.take(23))
+          for (final point in sampledIntermediates)
             {
               'location': {
                 'latLng': {
@@ -295,6 +296,45 @@ class GoogleRoutesService {
       points.add(LatLng(lat / 1e5, lng / 1e5));
     }
     return points;
+  }
+
+  /// Encodes geographic [points] into a standard Google encoded polyline string.
+  static String encodeGooglePolyline(List<LatLng> points) {
+    final buffer = StringBuffer();
+    var prevLat = 0;
+    var prevLng = 0;
+
+    void encodeValue(int value) {
+      var v = value < 0 ? ~(value << 1) : (value << 1);
+      while (v >= 0x20) {
+        buffer.writeCharCode((0x20 | (v & 0x1f)) + 63);
+        v >>= 5;
+      }
+      buffer.writeCharCode(v + 63);
+    }
+
+    for (final p in points) {
+      final lat = (p.latitude * 1e5).round();
+      final lng = (p.longitude * 1e5).round();
+      encodeValue(lat - prevLat);
+      encodeValue(lng - prevLng);
+      prevLat = lat;
+      prevLng = lng;
+    }
+    return buffer.toString();
+  }
+
+  static List<LatLng> _sampleIntermediates(
+    List<LatLng> points, {
+    required int maxCount,
+  }) {
+    if (points.length <= maxCount) return points;
+    final sampled = <LatLng>[];
+    for (var i = 0; i < maxCount; i++) {
+      final idx = ((i * (points.length - 1)) / (maxCount - 1)).round();
+      sampled.add(points[idx]);
+    }
+    return sampled;
   }
 }
 

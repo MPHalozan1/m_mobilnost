@@ -1,13 +1,17 @@
 // Shared UI helpers for payment methods, demo notices, date formatting, and auth prompts.
 
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 
+import '../../../../core/accessibility/a11y_settings.dart';
 import '../../../../core/accessibility/semantics_helpers.dart';
+import '../../../../core/firebase/firebase_bootstrap.dart';
 import '../../../../core/theme/colors.dart';
 import '../../../../core/widgets/big_button.dart';
 import '../../../../data/models/payment_method.dart';
+import '../../../../data/repositories/repository_providers.dart';
 import '../../../../l10n/app_localizations.dart';
 
 /// Navigates to [routeLocation] via GoRouter when mounted, or pushes [fallbackBuilder].
@@ -150,8 +154,8 @@ class DemoPaymentBanner extends StatelessWidget {
   }
 }
 
-/// Calm prompt card inviting guest riders to sign in before buying or managing payments.
-class GuestAuthPromptCard extends StatelessWidget {
+/// Calm prompt card inviting guest riders to sign in via Google or email before buying.
+class GuestAuthPromptCard extends ConsumerWidget {
   /// Creates a [GuestAuthPromptCard] with [onSignInPressed] and optional [onSecondaryPressed].
   const GuestAuthPromptCard({
     super.key,
@@ -170,9 +174,10 @@ class GuestAuthPromptCard extends StatelessWidget {
   final VoidCallback? onSecondaryPressed;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final l10n = context.l10n;
     final scheme = Theme.of(context).colorScheme;
+    final locale = ref.watch(a11ySettingsProvider).localeCode;
 
     return Card(
       child: Padding(
@@ -203,6 +208,17 @@ class GuestAuthPromptCard extends StatelessWidget {
               style: Theme.of(context).textTheme.bodyLarge,
             ),
             const SizedBox(height: 18),
+            GoogleSignInButton(
+              label: locale == 'sl'
+                  ? 'Prijava z Google računom'
+                  : 'Continue with Google',
+              onPressed: () {
+                ref.read(authRepositoryProvider).signInWithGoogle(
+                      preferredLocaleCode: locale,
+                    );
+              },
+            ),
+            const SizedBox(height: 10),
             BigButton(
               icon: Icons.login_rounded,
               label: l10n.accountSignIn,

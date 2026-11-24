@@ -243,9 +243,9 @@ void main() {
     });
 
     test('filters out non-step-free stops and non-low-floor lines when accessibleOnly is true', () async {
-      // UKC Maribor -> Pekre has direct Line P18 (isLowFloorDefault: false).
+      // Turnerjeva -> Pekre has direct Line P18 (isLowFloorDefault: false).
       final standard = await planner.planTrip(
-        origin: seedStopsById['ukc_maribor']!.position,
+        origin: seedStopsById['turnerjeva']!.position,
         destination: seedStopsById['pekre']!.position,
         mode: TripTimeMode.departAt,
         targetTime: DateTime(2026, 11, 23, 8, 15),
@@ -262,7 +262,7 @@ void main() {
       );
 
       final accessible = await planner.planTrip(
-        origin: seedStopsById['ukc_maribor']!.position,
+        origin: seedStopsById['turnerjeva']!.position,
         destination: seedStopsById['pekre']!.position,
         mode: TripTimeMode.departAt,
         targetTime: DateTime(2026, 11, 23, 8, 15),

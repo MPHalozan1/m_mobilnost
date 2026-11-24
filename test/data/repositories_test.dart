@@ -32,11 +32,11 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   group('Seed data integrity', () {
-    test('has 54 Maribor stops, 19 bidirectional lines (G1-G6 & P7-P19), hubs, and 16 places', () {
-      expect(seedStops.length, 54);
+    test('has 62 Maribor stops, 19 bidirectional lines (G1-G6 & P7-P19), hubs, and 16 places', () {
+      expect(seedStops.length, 62);
       expect(seedLines.length, 19);
       expect(seedPlaces.length, 16);
-      expect(seedTicketTypes.length, 7);
+      expect(seedTicketTypes.length, 15);
 
       const requiredStops = [
         'glavni_trg',
@@ -344,7 +344,7 @@ void main() {
 
       final types =
           await container.read(ticketRepositoryProvider).getTicketTypes();
-      expect(types.length, 7);
+      expect(types.length, 15);
     });
   });
 

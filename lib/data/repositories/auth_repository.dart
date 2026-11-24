@@ -42,6 +42,14 @@ abstract class AuthRepository {
     bool guardianConfirmed = false,
   });
 
+  /// Signs in using a Google Account (Firebase OAuth when configured, or local preview Google profile).
+  Future<UserProfile> signInWithGoogle({
+    String? googleEmail,
+    String? googleDisplayName,
+    String? photoUrl,
+    String preferredLocaleCode = 'sl',
+  });
+
   /// Ends the active session and switches to guest mode.
   Future<void> signOut();
 

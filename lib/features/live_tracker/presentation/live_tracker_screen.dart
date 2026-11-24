@@ -11,6 +11,10 @@ import 'package:m_mobilnost/core/accessibility/read_aloud.dart';
 import 'package:m_mobilnost/core/accessibility/semantics_helpers.dart';
 import 'package:m_mobilnost/core/layout/breakpoints.dart';
 import 'package:m_mobilnost/core/layout/responsive_builder.dart';
+import 'package:m_mobilnost/core/maps/google_map_3d_widget.dart';
+import 'package:m_mobilnost/core/maps/google_map_models.dart';
+import 'package:m_mobilnost/core/maps/google_web_views.dart';
+import 'package:m_mobilnost/core/network/route_geometry_service.dart';
 import 'package:m_mobilnost/core/theme/colors.dart';
 import 'package:m_mobilnost/core/utils/distance.dart';
 import 'package:m_mobilnost/core/utils/geo.dart';
@@ -661,6 +665,9 @@ class _LiveTrackerScreenState extends ConsumerState<LiveTrackerScreen> {
     required String targetStopName,
     required bool alertTriggered,
   }) {
+    final googleRoute = ref.watch(
+      googleLineRoutesProvider,
+    )['${bus.lineId}|${bus.directionId}'];
     final lineColor = line?.color ?? Theme.of(context).colorScheme.primary;
     final statusColors =
         Theme.of(context).extension<MarpromStatusColors>() ??
@@ -887,6 +894,25 @@ class _LiveTrackerScreenState extends ConsumerState<LiveTrackerScreen> {
                           ),
                         ],
                       ),
+                      if (googleRoute != null) ...[
+                        const SizedBox(height: 6),
+                        Row(
+                          children: [
+                            const Icon(
+                              Icons.alt_route_rounded,
+                              size: 16,
+                              color: MarpromColors.marpromRed,
+                            ),
+                            const SizedBox(width: 6),
+                            Expanded(
+                              child: Text(
+                                'Google Routes trasa: ${googleRoute.formattedDistanceKm} (~${googleRoute.formattedDurationMinutes})',
+                                style: Theme.of(context).textTheme.bodySmall,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
                     ],
                   ),
                 ),
@@ -1003,7 +1029,19 @@ class _LiveTrackerScreenState extends ConsumerState<LiveTrackerScreen> {
     required Map<String, BusStop> stopsMap,
   }) {
     final lineColor = line?.color ?? Theme.of(context).colorScheme.primary;
-    final points = direction?.polyline ?? const <LatLng>[];
+    final routeKey =
+        line != null && direction != null ? '${line.id}|${direction.id}' : null;
+    final googleRoute = routeKey != null
+        ? ref.watch(googleLineRoutesProvider)[routeKey]
+        : null;
+    final resolvedPoints = routeKey != null
+        ? (ref.watch(routeGeometryProvider(routeKey)).valueOrNull ??
+            googleRoute?.polylinePoints ??
+            direction?.roadPolyline ??
+            direction?.polyline ??
+            const <LatLng>[])
+        : (direction?.polyline ?? const <LatLng>[]);
+    final points = resolvedPoints;
     final fit = points.length >= 2
         ? CameraFit.bounds(
             bounds: LatLngBounds.fromPoints(points),
@@ -1089,11 +1127,63 @@ class _LiveTrackerScreenState extends ConsumerState<LiveTrackerScreen> {
         ),
     ];
 
-    return MariborTransitMap(
-      key: ValueKey('tracker_map_${line?.id ?? 'none'}_${direction?.id ?? 'none'}'),
+    final polylines3D = <GoogleMap3DPolylineData>[
+      if (points.length >= 2 && line != null && direction != null)
+        GoogleMap3DPolylineData(
+          id: '${line.id}_${direction.id}',
+          points: points,
+          color: lineColor,
+          strokeWidth: 7,
+        ),
+    ];
+
+    final markers3D = <GoogleMap3DMarkerData>[
+      if (direction != null)
+        for (final stopId in direction.stopIds)
+          if (stopsMap[stopId] != null)
+            GoogleMap3DMarkerData(
+              id: stopId,
+              position: stopsMap[stopId]!.position,
+              label: stopsMap[stopId]!.name,
+              isBus: false,
+            ),
+      if (bus != null)
+        GoogleMap3DMarkerData(
+          id: bus.vehicleId,
+          position: bus.position,
+          label:
+              '${bus.lineCode} • ${bus.passengerCount}/${bus.vehicleCapacity} potnikov → ${bus.nextStopName}',
+          isBus: true,
+          color: lineColor,
+        ),
+    ];
+
+    if (isFlutterTestEnvironment) {
+      return MariborTransitMap(
+        key: ValueKey('tracker_map_${line?.id ?? 'none'}_${direction?.id ?? 'none'}'),
+        initialCenter: bus?.position ?? GeoUtils.mariborCenter,
+        initialCameraFit: fit,
+        polylines: [
+          if (points.length >= 2)
+            Polyline(
+              points: points,
+              strokeWidth: 6,
+              color: lineColor,
+            ),
+        ],
+        markers: markers,
+      );
+    }
+
+    return GoogleMap3DWidget(
+      key: ValueKey('tracker_3d_${line?.id ?? 'none'}_${direction?.id ?? 'none'}'),
       initialCenter: bus?.position ?? GeoUtils.mariborCenter,
-      initialCameraFit: fit,
-      polylines: [
+      showPresets: false,
+      activeBusCount: bus != null ? 1 : 0,
+      totalPassengers: bus?.passengerCount,
+      polylines3D: polylines3D,
+      markers3D: markers3D,
+      polylines2D: [
         if (points.length >= 2)
           Polyline(
             points: points,
@@ -1101,7 +1191,7 @@ class _LiveTrackerScreenState extends ConsumerState<LiveTrackerScreen> {
             color: lineColor,
           ),
       ],
-      markers: markers,
+      markers2D: markers,
     );
   }
 }

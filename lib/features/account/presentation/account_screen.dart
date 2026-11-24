@@ -8,6 +8,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/accessibility/a11y_settings.dart';
 import '../../../core/accessibility/haptic_cues.dart';
 import '../../../core/accessibility/semantics_helpers.dart';
+import '../../../core/firebase/firebase_bootstrap.dart';
 import '../../../core/layout/responsive_builder.dart';
 import '../../../core/theme/colors.dart';
 import '../../../core/widgets/big_button.dart';
@@ -131,6 +132,34 @@ class _AccountScreenState extends ConsumerState<AccountScreen> {
     } on AuthException {
       if (mounted) {
         setState(() => _authError = context.l10n.commonErrorBody);
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() => _authError = context.l10n.commonErrorBody);
+      }
+    } finally {
+      if (mounted) setState(() => _submitting = false);
+    }
+  }
+
+  Future<void> _handleGoogleSignIn() async {
+    setState(() {
+      _submitting = true;
+      _authError = null;
+    });
+    try {
+      final settings = ref.read(a11ySettingsProvider);
+      await ref.read(authRepositoryProvider).signInWithGoogle(
+            preferredLocaleCode: settings.localeCode,
+          );
+      unawaited(
+        HapticCues.trigger(
+          HapticCueType.tap,
+          enabled: settings.hapticAlertsEnabled,
+        ),
+      );
+      if (mounted) {
+        _syncedProfileId = null;
       }
     } catch (_) {
       if (mounted) {
@@ -477,6 +506,40 @@ class _AccountScreenState extends ConsumerState<AccountScreen> {
                 _ErrorBanner(message: _authError!),
                 const SizedBox(height: 12),
               ],
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Text(
+                        settings.localeCode == 'sl'
+                            ? 'Hitra prijava z Google računom'
+                            : 'Quick Google Account Sign-In',
+                        style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                              fontWeight: FontWeight.w800,
+                            ),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        FirebaseBootstrap.isReady
+                            ? 'Firebase Auth Google OAuth aktiven.'
+                            : 'Takojšnja prijava z Google profilom za vozovnice NFC/QR in Firebase sinhronizacijo.',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                      const SizedBox(height: 12),
+                      GoogleSignInButton(
+                        label: settings.localeCode == 'sl'
+                            ? 'Prijava z Google računom'
+                            : 'Continue with Google',
+                        loading: _submitting,
+                        onPressed: _handleGoogleSignIn,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
               if (!_isSignUpMode)
                 _buildSignInCard(context, l10n)
               else
@@ -780,7 +843,8 @@ class _AccountScreenState extends ConsumerState<AccountScreen> {
                           ),
                         ],
                       ),
-                      if (user.isYouthEligible ||
+                      if (user.authProvider == 'google' ||
+                          user.isYouthEligible ||
                           user.isSeniorEligible ||
                           user.isUnder18) ...[
                         const SizedBox(height: 12),
@@ -788,6 +852,11 @@ class _AccountScreenState extends ConsumerState<AccountScreen> {
                           spacing: 8,
                           runSpacing: 8,
                           children: [
+                            if (user.authProvider == 'google')
+                              const StatusChip(
+                                type: TransitStatusType.onTime,
+                                label: 'Google Account',
+                              ),
                             if (user.isYouthEligible)
                               StatusChip(
                                 type: TransitStatusType.info,

@@ -7,6 +7,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../../core/accessibility/a11y_settings.dart';
 import '../../../../core/maps/google_map_3d_widget.dart';
 import '../../../../core/maps/google_map_models.dart';
+import '../../../../core/maps/google_web_views.dart';
+import '../../../../core/network/route_geometry_service.dart';
 import '../../../../core/theme/colors.dart';
 import '../../../../core/utils/geo.dart';
 import '../../../../core/widgets/status_chip.dart';
@@ -41,12 +43,22 @@ class _WebLiveStatsPageState extends ConsumerState<WebLiveStatsPage> {
   String? _selectedLineFilter;
   String? _focusedVehicleId;
   int _tableFilter = 0; // 0: All, 1: G1-G6, 2: P7-P19, 3: Electric, 4: Crowded (>=65%)
+  bool _showGoogleDirectionsEmbed = false;
 
   @override
   void initState() {
     super.initState();
     _selectedLineFilter = widget.initialLineId;
     _focusedVehicleId = widget.initialVehicleId;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || isFlutterTestEnvironment) return;
+      final notifier = ref.read(googleLineRoutesProvider.notifier);
+      if (_selectedLineFilter != null) {
+        notifier.ensureLineLoaded(_selectedLineFilter!);
+      } else {
+        notifier.warmAllActiveLines();
+      }
+    });
   }
 
   @override
@@ -56,6 +68,7 @@ class _WebLiveStatsPageState extends ConsumerState<WebLiveStatsPage> {
     final liveBuses =
         ref.watch(liveBusesStreamProvider).valueOrNull ??
             ref.watch(busSimulatorProvider).snapshotAt(DateTime.now());
+    final googleRoutesMap = ref.watch(googleLineRoutesProvider);
     final stats = computeFleetStatistics(liveBuses);
     final width = MediaQuery.sizeOf(context).width;
     final isWide = width >= 1000;
@@ -84,15 +97,34 @@ class _WebLiveStatsPageState extends ConsumerState<WebLiveStatsPage> {
     }
 
     final mapCenter = focusedBus?.position ?? GeoUtils.mariborCenter;
+    final highlightedLineId = focusedBus?.lineId ?? _selectedLineFilter;
+    final highlightedDirectionId = focusedBus?.directionId ??
+        (highlightedLineId != null
+            ? seedLinesById[highlightedLineId]?.directions.first.id
+            : null);
+    final focusedGoogleRoute =
+        (highlightedLineId != null && highlightedDirectionId != null)
+            ? googleRoutesMap['$highlightedLineId|$highlightedDirectionId']
+            : null;
+    final activeLinesInTraffic = {
+      for (final b in liveBuses) b.lineId,
+    };
 
     final polylines3D = <GoogleMap3DPolylineData>[
       for (final line in seedLines)
         if (_selectedLineFilter == null || _selectedLineFilter == line.id)
           GoogleMap3DPolylineData(
             id: line.id,
-            points: line.directions.first.polyline,
+            points: googleRoutesMap[
+                        '${line.id}|${line.directions.first.id}']
+                    ?.polylinePoints ??
+                line.directions.first.roadPolyline ??
+                line.directions.first.polyline,
             color: line.color,
-            strokeWidth: _selectedLineFilter == line.id ? 7 : 4,
+            strokeWidth: _selectedLineFilter == line.id ||
+                    focusedBus?.lineId == line.id
+                ? 8
+                : (activeLinesInTraffic.contains(line.id) ? 5 : 3),
           ),
     ];
 
@@ -119,11 +151,20 @@ class _WebLiveStatsPageState extends ConsumerState<WebLiveStatsPage> {
       for (final line in seedLines)
         if (_selectedLineFilter == null || _selectedLineFilter == line.id)
           Polyline(
-            points: line.directions.first.roadPolyline ??
+            points: googleRoutesMap[
+                        '${line.id}|${line.directions.first.id}']
+                    ?.polylinePoints ??
+                line.directions.first.roadPolyline ??
                 line.directions.first.polyline,
-            strokeWidth: _selectedLineFilter == line.id ? 5.5 : 3.0,
+            strokeWidth: _selectedLineFilter == line.id ||
+                    focusedBus?.lineId == line.id
+                ? 6.0
+                : 3.5,
             color: line.color.withValues(
-              alpha: _selectedLineFilter == line.id ? 0.95 : 0.65,
+              alpha: _selectedLineFilter == line.id ||
+                      focusedBus?.lineId == line.id
+                  ? 0.95
+                  : 0.72,
             ),
           ),
     ];
@@ -284,27 +325,88 @@ class _WebLiveStatsPageState extends ConsumerState<WebLiveStatsPage> {
               ),
               const SizedBox(height: 22),
 
-              // 3D Google Map + Live Focus Sidebar
+              // 3D Google Map + Live Focus & Google Routes Embed Bar
               Card(
                 clipBehavior: Clip.antiAlias,
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 10,
+                      ),
+                      color: scheme.surfaceContainerHighest.withValues(
+                        alpha: 0.38,
+                      ),
+                      child: Wrap(
+                        spacing: 12,
+                        runSpacing: 8,
+                        alignment: WrapAlignment.spaceBetween,
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        children: [
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 6,
+                            crossAxisAlignment: WrapCrossAlignment.center,
+                            children: [
+                              const Icon(
+                                Icons.alt_route_rounded,
+                                size: 18,
+                                color: MarpromColors.marpromRed,
+                              ),
+                              Text(
+                                focusedGoogleRoute != null
+                                    ? 'Google Routes API v2 • ${highlightedLineId ?? ''} (${focusedGoogleRoute.formattedDistanceKm}, ${focusedGoogleRoute.formattedDurationMinutes})'
+                                    : 'Google Routes API v2 • ${googleRoutesMap.values.where((r) => r.isLiveApi).length} živih cestnih tras sinhroniziranih',
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .bodySmall
+                                    ?.copyWith(fontWeight: FontWeight.w700),
+                              ),
+                            ],
+                          ),
+                          if (highlightedLineId != null)
+                            OutlinedButton.icon(
+                              onPressed: () => setState(
+                                () => _showGoogleDirectionsEmbed =
+                                    !_showGoogleDirectionsEmbed,
+                              ),
+                              icon: const Icon(Icons.directions_rounded, size: 16),
+                              label: Text(
+                                _showGoogleDirectionsEmbed
+                                    ? 'Nazaj na 3D floto'
+                                    : 'Google Maps trasa linije $highlightedLineId',
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
                     SizedBox(
                       height: 520,
-                      child: GoogleMap3DWidget(
-                        initialCenter: mapCenter,
-                        mapController: _mapController,
-                        polylines3D: polylines3D,
-                        markers3D: markers3D,
-                        polylines2D: polylines2D,
-                        markers2D: markers2D,
-                        activeBusCount: visibleBuses.length,
-                        totalPassengers: visibleBuses.fold<int>(
-                          0,
-                          (sum, b) => sum + b.passengerCount,
-                        ),
-                      ),
+                      child: _showGoogleDirectionsEmbed &&
+                              highlightedLineId != null
+                          ? GoogleDirectionsEmbedPlatformView(
+                              origin: focusedBus != null
+                                  ? '${focusedBus.position.latitude},${focusedBus.position.longitude}'
+                                  : '${seedStopsById[seedLinesById[highlightedLineId]!.directions.first.stopIds.first]!.name}, Maribor, Slovenia',
+                              destination:
+                                  '${seedStopsById[seedLinesById[highlightedLineId]!.directions.first.terminalStopId]!.name}, Maribor, Slovenia',
+                              mode: 'transit',
+                            )
+                          : GoogleMap3DWidget(
+                              initialCenter: mapCenter,
+                              mapController: _mapController,
+                              polylines3D: polylines3D,
+                              markers3D: markers3D,
+                              polylines2D: polylines2D,
+                              markers2D: markers2D,
+                              activeBusCount: visibleBuses.length,
+                              totalPassengers: visibleBuses.fold<int>(
+                                0,
+                                (sum, b) => sum + b.passengerCount,
+                              ),
+                            ),
                     ),
                     if (focusedBus != null)
                       Container(
@@ -350,7 +452,8 @@ class _WebLiveStatsPageState extends ConsumerState<WebLiveStatsPage> {
                                     Text(
                                       'Naslednja postaja: ${focusedBus.nextStopName} (${(focusedBus.etaToNextStopSeconds / 60).ceil()} min) • '
                                       '${focusedBus.passengerCount}/${focusedBus.vehicleCapacity} ${ws.passengersWord} (${focusedBus.loadPercent}%) • '
-                                      '${focusedBus.speedKmh} km/h',
+                                      '${focusedBus.speedKmh} km/h'
+                                      '${focusedGoogleRoute != null ? ' • Trasa: ${focusedGoogleRoute.formattedDistanceKm}' : ''}',
                                       style: const TextStyle(
                                         color: Color(0xFFCBD5E1),
                                         fontSize: 12,
@@ -361,8 +464,10 @@ class _WebLiveStatsPageState extends ConsumerState<WebLiveStatsPage> {
                               ],
                             ),
                             TextButton(
-                              onPressed: () =>
-                                  setState(() => _focusedVehicleId = null),
+                              onPressed: () => setState(() {
+                                _focusedVehicleId = null;
+                                _showGoogleDirectionsEmbed = false;
+                              }),
                               child: const Text(
                                 'Skrij fokus',
                                 style: TextStyle(color: Colors.white),

@@ -85,6 +85,23 @@ void main() {
         () => reader.simulateTapValidation('   '),
         throwsArgumentError,
       );
+
+      final platformReader = PlatformNfcTicketCardReader(clock: () => fixedTime);
+      final platformStatus = await platformReader.readCardStatus();
+      expect(platformStatus.aidHex, PlatformNfcTicketCardReader.marpromAidHex);
+      expect(
+        await platformReader.armTicketForNfc(
+          ticketId: 'tkt_42',
+          payload: 'MARPROM|SINGLE75',
+        ),
+        isTrue,
+      );
+      expect(await platformReader.simulateTapValidation('tkt_42'), fixedTime);
+
+      expect(seedTicketTypesById['single']!.priceEur, 1.50);
+      expect(seedTicketTypesById['day_24h']!.priceEur, 6.00);
+      expect(seedTicketTypesById['monthly']!.priceEur, 36.00);
+      expect(seedTicketTypesById['pr_zone_a']!.priceEur, 49.00);
     });
 
     test('isValidCardLast4 strictly accepts only 4 numeric digits', () {
@@ -349,6 +366,7 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('Guest mode'), findsOneWidget);
+      expect(find.text('Continue with Google'), findsOneWidget);
 
       // Quick-fill demo credentials and sign in.
       final demoBtn = find.text('Demo user: demo@marprom.test / demo1234');
@@ -393,6 +411,30 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(container.read(authRepositoryProvider).currentUser, isNull);
+    });
+
+    testWidgets('AccountScreen signs in with Google Account', (tester) async {
+      final container =
+          await _createContainer(initialPrefs: {'a11y_locale_code': 'en'});
+      addTearDown(container.dispose);
+
+      await tester.pumpWidget(
+        _wrapWithApp(
+          container: container,
+          child: const AccountScreen(),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.ensureVisible(find.text('Continue with Google'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Continue with Google'));
+      await tester.pumpAndSettle();
+
+      final user = container.read(authRepositoryProvider).currentUser;
+      expect(user, isNotNull);
+      expect(user!.authProvider, 'google');
+      expect(find.text('Google Account'), findsOneWidget);
     });
 
     testWidgets(

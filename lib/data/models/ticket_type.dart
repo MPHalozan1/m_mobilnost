@@ -2,6 +2,21 @@
 
 import 'package:flutter/foundation.dart';
 
+/// Official Marprom Mestni promet ticket category groupings.
+enum TicketFareGroup {
+  /// Single 75-min and 10-ride coupon tickets (`Enkratne & kuponske`).
+  singleAndCoupon,
+
+  /// 1-day, off-peak day, 2-day, and 3-day passes (`Dnevne & večdnevne`).
+  dailyAndMultiDay,
+
+  /// Monthly, school, IJPP solo, and annual commuter passes (`Mesečne & letne`).
+  monthlyAndAnnual,
+
+  /// Combined bus + Zone A / Zone B Park & Ride passes (`Kombinirane P+R`).
+  parkAndRide,
+}
+
 /// Represents a purchasable Marprom bus ticket product.
 @immutable
 class TicketType {
@@ -13,9 +28,11 @@ class TicketType {
     required this.descriptions,
     required this.durationMinutes,
     required this.priceEur,
+    this.fareGroup = TicketFareGroup.singleAndCoupon,
+    this.ridesCount = 1,
     this.isYouthOnly = false,
     this.isSeniorOnly = false,
-    this.zone = 'Maribor',
+    this.zone = 'Maribor JMPP',
   });
 
   /// Unique product identifier.
@@ -36,13 +53,19 @@ class TicketType {
   /// Ticket price in Euros (EUR).
   final double priceEur;
 
+  /// Category tab for ticket shop filtering.
+  final TicketFareGroup fareGroup;
+
+  /// Included ride count (`1` for single/passes, `10` for coupon bundles).
+  final int ridesCount;
+
   /// Whether the ticket is restricted to eligible youth/student riders.
   final bool isYouthOnly;
 
   /// Whether the ticket is restricted to senior riders (65+).
   final bool isSeniorOnly;
 
-  /// Geographic fare zone (e.g. `Maribor`).
+  /// Geographic fare zone (e.g. `Maribor JMPP`).
   final String zone;
 
   /// Returns the localized title for [localeCode] with `sl`/`en` fallbacks.

@@ -13,6 +13,8 @@ class UserProfile {
     this.dateOfBirth,
     this.preferredLocaleCode = 'sl',
     this.guardianConfirmed = false,
+    this.photoUrl,
+    this.authProvider = 'email',
     required this.createdAt,
   });
 
@@ -33,6 +35,12 @@ class UserProfile {
 
   /// Whether parent/guardian permission has been confirmed for minor purchases.
   final bool guardianConfirmed;
+
+  /// Optional profile avatar URL (populated for Google Sign-In accounts).
+  final String? photoUrl;
+
+  /// Authentication source (`email` or `google`).
+  final String authProvider;
 
   /// Account creation timestamp.
   final DateTime createdAt;
@@ -94,6 +102,8 @@ class UserProfile {
     DateTime? dateOfBirth,
     String? preferredLocaleCode,
     bool? guardianConfirmed,
+    String? photoUrl,
+    String? authProvider,
     DateTime? createdAt,
   }) {
     return UserProfile(
@@ -103,6 +113,8 @@ class UserProfile {
       dateOfBirth: dateOfBirth ?? this.dateOfBirth,
       preferredLocaleCode: preferredLocaleCode ?? this.preferredLocaleCode,
       guardianConfirmed: guardianConfirmed ?? this.guardianConfirmed,
+      photoUrl: photoUrl ?? this.photoUrl,
+      authProvider: authProvider ?? this.authProvider,
       createdAt: createdAt ?? this.createdAt,
     );
   }
@@ -115,6 +127,8 @@ class UserProfile {
         'dateOfBirth': dateOfBirth?.toIso8601String(),
         'preferredLocaleCode': preferredLocaleCode,
         'guardianConfirmed': guardianConfirmed,
+        'photoUrl': photoUrl,
+        'authProvider': authProvider,
         'createdAt': createdAt.toIso8601String(),
       };
 
@@ -130,6 +144,8 @@ class UserProfile {
           : DateTime.parse(json['dateOfBirth'] as String),
       preferredLocaleCode: json['preferredLocaleCode'] as String? ?? 'sl',
       guardianConfirmed: json['guardianConfirmed'] as bool? ?? false,
+      photoUrl: json['photoUrl'] as String?,
+      authProvider: json['authProvider'] as String? ?? 'email',
       createdAt: DateTime.parse(json['createdAt'] as String),
     );
   }

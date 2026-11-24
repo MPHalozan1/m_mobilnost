@@ -1,11 +1,17 @@
 // Interactive Marprom 7-day-of-week timetable portal for all 19 lines (G1-G6 & P7-P19).
 
 import 'package:flutter/material.dart';
+import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../../core/accessibility/a11y_settings.dart';
+import '../../../../core/maps/google_map_3d_widget.dart';
+import '../../../../core/maps/google_map_models.dart';
+import '../../../../core/maps/google_web_views.dart';
+import '../../../../core/network/route_geometry_service.dart';
 import '../../../../core/theme/colors.dart';
+import '../../../../core/utils/geo.dart';
 import '../../../../data/models/bus_line.dart';
 import '../../../../data/models/bus_position.dart';
 import '../../../../data/repositories/repository_providers.dart';
@@ -42,6 +48,10 @@ class _WebSchedulesPageState extends ConsumerState<WebSchedulesPage> {
         ? seedLinesById[widget.initialLineId!]
         : null;
     _selectedLineId = initial?.id ?? seedLines.first.id;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || isFlutterTestEnvironment) return;
+      ref.read(googleLineRoutesProvider.notifier).ensureLineLoaded(_selectedLineId);
+    });
   }
 
   @override
@@ -56,6 +66,11 @@ class _WebSchedulesPageState extends ConsumerState<WebSchedulesPage> {
           _directionIndex = 0;
           _selectedStopId = null;
         });
+        if (!isFlutterTestEnvironment) {
+          ref
+              .read(googleLineRoutesProvider.notifier)
+              .ensureLineLoaded(resolved.id);
+        }
       }
     }
   }
@@ -91,11 +106,19 @@ class _WebSchedulesPageState extends ConsumerState<WebSchedulesPage> {
     final stopIdx = direction.stopIds.indexOf(activeStopId);
 
     final scheduleDate = sampleDateForWeekday(_selectedWeekday);
+    final selectedDayType = scheduleTypeForDate(scheduleDate);
+    final operatesOnSelectedDay = doesLineOperateOn(activeLine.id, selectedDayType);
     final trips = generateTripsForDirection(
       line: activeLine,
       direction: direction,
       date: scheduleDate,
     );
+
+    final routeKey = '${activeLine.id}|${direction.id}';
+    final googleRoute = ref.watch(googleLineRoutesProvider)[routeKey];
+    final routePoints = googleRoute?.polylinePoints ??
+        direction.roadPolyline ??
+        direction.polyline;
 
     final busesOnDirection = liveBuses
         .where(
@@ -215,11 +238,20 @@ class _WebSchedulesPageState extends ConsumerState<WebSchedulesPage> {
                                       .where((b) => b.lineId == line.id)
                                       .length;
                                   return InkWell(
-                                    onTap: () => setState(() {
-                                      _selectedLineId = line.id;
-                                      _directionIndex = 0;
-                                      _selectedStopId = null;
-                                    }),
+                                    onTap: () {
+                                      setState(() {
+                                        _selectedLineId = line.id;
+                                        _directionIndex = 0;
+                                        _selectedStopId = null;
+                                      });
+                                      if (!isFlutterTestEnvironment) {
+                                        ref
+                                            .read(
+                                              googleLineRoutesProvider.notifier,
+                                            )
+                                            .ensureLineLoaded(line.id);
+                                      }
+                                    },
                                     borderRadius: BorderRadius.circular(10),
                                     child: Container(
                                       padding: const EdgeInsets.symmetric(
@@ -429,21 +461,309 @@ class _WebSchedulesPageState extends ConsumerState<WebSchedulesPage> {
                                       ),
                                   ],
                                 ),
+                                const SizedBox(height: 14),
+                                Container(
+                                  width: double.infinity,
+                                  padding: const EdgeInsets.all(12),
+                                  decoration: BoxDecoration(
+                                    color: scheme.surfaceContainerHighest
+                                        .withValues(alpha: 0.45),
+                                    borderRadius: BorderRadius.circular(10),
+                                  ),
+                                  child: Wrap(
+                                    spacing: 18,
+                                    runSpacing: 6,
+                                    children: [
+                                      Text(
+                                        'Delavnik (Pon–Pet): ${formatLineOperatingHours(activeLine.id, directionIndex: _directionIndex, type: DayScheduleType.weekday)}',
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .bodySmall
+                                            ?.copyWith(
+                                              fontWeight: FontWeight.w600,
+                                            ),
+                                      ),
+                                      Text(
+                                        'Sobota: ${formatLineOperatingHours(activeLine.id, directionIndex: _directionIndex, type: DayScheduleType.saturday)}',
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .bodySmall
+                                            ?.copyWith(
+                                              fontWeight: FontWeight.w600,
+                                            ),
+                                      ),
+                                      Text(
+                                        'Nedelja / Praznik: ${formatLineOperatingHours(activeLine.id, directionIndex: _directionIndex, type: DayScheduleType.sundayHoliday)}',
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .bodySmall
+                                            ?.copyWith(
+                                              fontWeight: FontWeight.w700,
+                                              color: doesLineOperateOn(
+                                                activeLine.id,
+                                                DayScheduleType.sundayHoliday,
+                                              )
+                                                  ? null
+                                                  : MarpromColors.marpromRed,
+                                            ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                if (!operatesOnSelectedDay) ...[
+                                  const SizedBox(height: 12),
+                                  Container(
+                                    width: double.infinity,
+                                    padding: const EdgeInsets.all(14),
+                                    decoration: BoxDecoration(
+                                      color: scheme.errorContainer,
+                                      borderRadius: BorderRadius.circular(12),
+                                    ),
+                                    child: Row(
+                                      children: [
+                                        Icon(
+                                          Icons.event_busy_rounded,
+                                          color: scheme.onErrorContainer,
+                                        ),
+                                        const SizedBox(width: 10),
+                                        Expanded(
+                                          child: Text(
+                                            'Linija ${activeLine.code} ob nedeljah in praznikih po uradnem voznem redu Marprom ne obratuje. Izberite delavnik, soboto ali glavne linije G1–G4 / G6.',
+                                            style: TextStyle(
+                                              color: scheme.onErrorContainer,
+                                              fontWeight: FontWeight.w600,
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ],
                               ],
                             ),
                           ),
                         ),
                         const SizedBox(height: 18),
 
+                        // Google Maps live route visualization for the selected line direction
+                        Card(
+                          clipBehavior: Clip.antiAlias,
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              Padding(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 18,
+                                  vertical: 12,
+                                ),
+                                child: Wrap(
+                                  spacing: 12,
+                                  runSpacing: 6,
+                                  alignment: WrapAlignment.spaceBetween,
+                                  crossAxisAlignment: WrapCrossAlignment.center,
+                                  children: [
+                                    Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Icon(
+                                          Icons.route_rounded,
+                                          color: activeLine.color,
+                                          size: 20,
+                                        ),
+                                        const SizedBox(width: 8),
+                                        Text(
+                                          'Google Maps Routes trasa linije ${activeLine.code}',
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .titleSmall
+                                              ?.copyWith(
+                                                fontWeight: FontWeight.w800,
+                                              ),
+                                        ),
+                                      ],
+                                    ),
+                                    Text(
+                                      googleRoute != null
+                                          ? '${googleRoute.formattedDistanceKm} • ~${googleRoute.formattedDurationMinutes} (${googleRoute.isLiveApi ? 'Google Routes API v2' : 'Cestna ocena'})'
+                                          : 'Priprava Google Routes cestne trase...',
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .bodySmall
+                                          ?.copyWith(
+                                            color: scheme.onSurfaceVariant,
+                                            fontWeight: FontWeight.w600,
+                                          ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              SizedBox(
+                                height: 260,
+                                child: GoogleMap3DWidget(
+                                  initialCenter: routePoints.isNotEmpty
+                                      ? routePoints[routePoints.length ~/ 2]
+                                      : GeoUtils.mariborCenter,
+                                  initialUse3D: !isFlutterTestEnvironment,
+                                  showPresets: false,
+                                  activeBusCount: busesOnDirection.length,
+                                  totalPassengers: busesOnDirection.fold<int>(
+                                    0,
+                                    (s, b) => s + b.passengerCount,
+                                  ),
+                                  polylines3D: [
+                                    GoogleMap3DPolylineData(
+                                      id: '${activeLine.id}_${direction.id}',
+                                      points: routePoints,
+                                      color: activeLine.color,
+                                      strokeWidth: 7,
+                                    ),
+                                  ],
+                                  markers3D: [
+                                    for (final bus in busesOnDirection)
+                                      GoogleMap3DMarkerData(
+                                        id: bus.vehicleId,
+                                        position: bus.position,
+                                        label:
+                                            '${bus.lineCode} • ${bus.passengerCount}/${bus.vehicleCapacity} ${ws.passengersWord} → ${bus.nextStopName}',
+                                        isBus: true,
+                                        color: activeLine.color,
+                                      ),
+                                    for (final stopId in direction.stopIds)
+                                      if (seedStopsById[stopId] != null)
+                                        GoogleMap3DMarkerData(
+                                          id: stopId,
+                                          position:
+                                              seedStopsById[stopId]!.position,
+                                          label: seedStopsById[stopId]!.name,
+                                          isBus: false,
+                                        ),
+                                  ],
+                                  polylines2D: [
+                                    if (routePoints.length >= 2)
+                                      Polyline(
+                                        points: routePoints,
+                                        color: activeLine.color,
+                                        strokeWidth: 5.5,
+                                        borderColor: Colors.white,
+                                        borderStrokeWidth: 1.5,
+                                      ),
+                                  ],
+                                  markers2D: [
+                                    for (final bus in busesOnDirection)
+                                      Marker(
+                                        point: bus.position,
+                                        width: 82,
+                                        height: 36,
+                                        child: Container(
+                                          alignment: Alignment.center,
+                                          decoration: BoxDecoration(
+                                            color: activeLine.color,
+                                            borderRadius: BorderRadius.circular(
+                                              10,
+                                            ),
+                                            border: Border.all(
+                                              color: Colors.white,
+                                              width: 2,
+                                            ),
+                                          ),
+                                          child: Text(
+                                            '${bus.lineCode} • ${bus.passengerCount}',
+                                            style: const TextStyle(
+                                              color: Colors.white,
+                                              fontSize: 11,
+                                              fontWeight: FontWeight.w800,
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 18),
+
                         // Stop sequence with live buses & passenger count + Departures matrix
-                        Flex(
-                          direction:
-                              width >= 1180 ? Axis.horizontal : Axis.vertical,
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Expanded(
-                              flex: width >= 1180 ? 4 : 0,
-                              child: Card(
+                        if (width >= 1180)
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Expanded(
+                                flex: 4,
+                                child: Card(
+                                  child: Padding(
+                                    padding: const EdgeInsets.all(18),
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          'Postajališča na trasi (${direction.stopIds.length})',
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .titleMedium
+                                              ?.copyWith(
+                                                fontWeight: FontWeight.w800,
+                                              ),
+                                        ),
+                                        const SizedBox(height: 4),
+                                        Text(
+                                          'Kliknite postajališče za odhode',
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .bodySmall
+                                              ?.copyWith(
+                                                color: scheme.onSurfaceVariant,
+                                              ),
+                                        ),
+                                        const SizedBox(height: 12),
+                                        for (var i = 0;
+                                            i < direction.stopIds.length;
+                                            i++)
+                                          _StopSequenceRow(
+                                            stopId: direction.stopIds[i],
+                                            lineColor: activeLine.color,
+                                            isFirst: i == 0,
+                                            isLast: i ==
+                                                direction.stopIds.length - 1,
+                                            isSelected: direction.stopIds[i] ==
+                                                activeStopId,
+                                            busesApproaching: busesOnDirection
+                                                .where((b) =>
+                                                    b.nextStopId ==
+                                                    direction.stopIds[i])
+                                                .toList(growable: false),
+                                            passengersWord: ws.passengersWord,
+                                            onTap: () => setState(() {
+                                              _selectedStopId =
+                                                  direction.stopIds[i];
+                                            }),
+                                          ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 18),
+                              Expanded(
+                                flex: 6,
+                                child: _DepartureMatrixCard(
+                                  line: activeLine,
+                                  stopName: seedStopsById[activeStopId]?.name ??
+                                      activeStopId,
+                                  dayLabel: ws.weekdayName(_selectedWeekday),
+                                  trips: trips,
+                                  stopIndex: stopIdx < 0 ? 0 : stopIdx,
+                                ),
+                              ),
+                            ],
+                          )
+                        else
+                          Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              Card(
                                 child: Padding(
                                   padding: const EdgeInsets.all(18),
                                   child: Column(
@@ -496,14 +816,8 @@ class _WebSchedulesPageState extends ConsumerState<WebSchedulesPage> {
                                   ),
                                 ),
                               ),
-                            ),
-                            SizedBox(
-                              width: width >= 1180 ? 18 : 0,
-                              height: width >= 1180 ? 0 : 18,
-                            ),
-                            Expanded(
-                              flex: width >= 1180 ? 6 : 0,
-                              child: _DepartureMatrixCard(
+                              const SizedBox(height: 18),
+                              _DepartureMatrixCard(
                                 line: activeLine,
                                 stopName: seedStopsById[activeStopId]?.name ??
                                     activeStopId,
@@ -511,9 +825,8 @@ class _WebSchedulesPageState extends ConsumerState<WebSchedulesPage> {
                                 trips: trips,
                                 stopIndex: stopIdx < 0 ? 0 : stopIdx,
                               ),
-                            ),
-                          ],
-                        ),
+                            ],
+                          ),
                       ],
                     ),
                   ),

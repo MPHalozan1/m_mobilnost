@@ -234,6 +234,7 @@ class _LineDetailScreenState extends ConsumerState<LineDetailScreen> {
                           context: context,
                           l10n: l10n,
                           line: line,
+                          directionIndex: dirIdx,
                           stopsMap: stopsMap,
                           activeStopId: activeStopId,
                           allDepartures: payload.departures,
@@ -788,6 +789,7 @@ class _LineDetailScreenState extends ConsumerState<LineDetailScreen> {
     required BuildContext context,
     required AppLocalizations l10n,
     required BusLine line,
+    required int directionIndex,
     required Map<String, BusStop> stopsMap,
     required String activeStopId,
     required List<Departure> allDepartures,
@@ -798,6 +800,7 @@ class _LineDetailScreenState extends ConsumerState<LineDetailScreen> {
     required DateTime now,
   }) {
     final activeStopName = stopsMap[activeStopId]?.name ?? activeStopId;
+    final operatesOnSelectedDay = doesLineOperateOn(line.id, _scheduleType);
     final firstBus = allDepartures.isNotEmpty
         ? TimeFormatUtils.formatTime24(allDepartures.first.scheduledTime)
         : '--:--';
@@ -820,6 +823,50 @@ class _LineDetailScreenState extends ConsumerState<LineDetailScreen> {
               useSimulatedLive: useSimulatedLive,
               updatedAt: fetchedAt,
             ),
+            const SizedBox(height: 10),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Theme.of(context)
+                    .colorScheme
+                    .surfaceContainerHighest
+                    .withValues(alpha: 0.45),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Obratovanje linije ${line.code} (Pon–Ned)',
+                    style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                          fontWeight: FontWeight.w800,
+                        ),
+                  ),
+                  const SizedBox(height: 6),
+                  Wrap(
+                    spacing: 12,
+                    runSpacing: 6,
+                    children: [
+                      Text(
+                        'Pon–Pet: ${formatLineOperatingHours(line.id, directionIndex: directionIndex, type: DayScheduleType.weekday)}',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                      Text(
+                        'Sobota: ${formatLineOperatingHours(line.id, directionIndex: directionIndex, type: DayScheduleType.saturday)}',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                      Text(
+                        'Nedelja/Praznik: ${formatLineOperatingHours(line.id, directionIndex: directionIndex, type: DayScheduleType.sundayHoliday)}',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              fontWeight: FontWeight.w700,
+                            ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
             const SizedBox(height: 12),
             Wrap(
               spacing: 8,
@@ -834,8 +881,14 @@ class _LineDetailScreenState extends ConsumerState<LineDetailScreen> {
                             child: Text(localizedDayScheduleLabel(l10n, type)),
                           )
                         : OutlinedButton(
-                            onPressed: () =>
-                                setState(() => _scheduleType = type),
+                            onPressed: () => setState(() {
+                              _scheduleType = type;
+                              _selectedWeekday = switch (type) {
+                                DayScheduleType.weekday => DateTime.monday,
+                                DayScheduleType.saturday => DateTime.saturday,
+                                DayScheduleType.sundayHoliday => DateTime.sunday,
+                              };
+                            }),
                             child: Text(localizedDayScheduleLabel(l10n, type)),
                           ),
                   ),
@@ -873,59 +926,91 @@ class _LineDetailScreenState extends ConsumerState<LineDetailScreen> {
               ),
             ),
             const SizedBox(height: 12),
-            Wrap(
-              spacing: 16,
-              runSpacing: 6,
-              children: [
-                Text(
-                  '${l10n.linesFirstBus}: $firstBus',
-                  style: Theme.of(context).textTheme.bodyMedium,
-                ),
-                Text(
-                  '${l10n.linesLastBus}: $lastBus',
-                  style: Theme.of(context).textTheme.bodyMedium,
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            if (visibleDepartures.isEmpty)
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 16),
-                child: Text(
-                  l10n.linesNoDepartures,
-                  style: Theme.of(context).textTheme.bodyLarge,
+            if (!operatesOnSelectedDay)
+              Card(
+                color: Theme.of(context).colorScheme.errorContainer,
+                child: Padding(
+                  padding: const EdgeInsets.all(14),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Icon(
+                        Icons.event_busy_rounded,
+                        color: Theme.of(context).colorScheme.onErrorContainer,
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          'Linija ${line.code} ob nedeljah in praznikih ne obratuje (po uradnem voznem redu Marprom). Preverite glavne linije G1–G4 ali G6.',
+                          style: Theme.of(context)
+                              .textTheme
+                              .bodyMedium
+                              ?.copyWith(
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .onErrorContainer,
+                              ),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               )
             else ...[
-              for (final dep in visibleDepartures) ...[
-                DepartureTileCard(
-                  departure: dep,
-                  now: now,
-                  lineColor: line.color,
-                  showLineBadge: false,
-                  showRelativeCountdown:
-                      _scheduleType == scheduleTypeForDate(now),
-                  onTap: () => context.push(
-                    '/tracker?lineId=${Uri.encodeComponent(line.id)}'
-                    '&stopId=${Uri.encodeComponent(activeStopId)}',
+              Wrap(
+                spacing: 16,
+                runSpacing: 6,
+                children: [
+                  Text(
+                    '${l10n.linesFirstBus}: $firstBus',
+                    style: Theme.of(context).textTheme.bodyMedium,
                   ),
-                ),
-                const SizedBox(height: 10),
+                  Text(
+                    '${l10n.linesLastBus}: $lastBus',
+                    style: Theme.of(context).textTheme.bodyMedium,
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              if (visibleDepartures.isEmpty)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 16),
+                  child: Text(
+                    l10n.linesNoDepartures,
+                    style: Theme.of(context).textTheme.bodyLarge,
+                  ),
+                )
+              else ...[
+                for (final dep in visibleDepartures) ...[
+                  DepartureTileCard(
+                    departure: dep,
+                    now: now,
+                    lineColor: line.color,
+                    showLineBadge: false,
+                    showRelativeCountdown:
+                        _scheduleType == scheduleTypeForDate(now),
+                    onTap: () => context.push(
+                      '/tracker?lineId=${Uri.encodeComponent(line.id)}'
+                      '&stopId=${Uri.encodeComponent(activeStopId)}',
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                ],
+                if (totalUpcomingCount > visibleDepartures.length ||
+                    _showAllDepartures)
+                  BigButton(
+                    icon: _showAllDepartures
+                        ? Icons.expand_less_rounded
+                        : Icons.expand_more_rounded,
+                    label: _showAllDepartures
+                        ? l10n.commonShowLess
+                        : l10n.commonShowMore,
+                    variant: BigButtonVariant.outlined,
+                    expanded: true,
+                    onPressed: () =>
+                        setState(() => _showAllDepartures = !_showAllDepartures),
+                  ),
               ],
-              if (totalUpcomingCount > visibleDepartures.length ||
-                  _showAllDepartures)
-                BigButton(
-                  icon: _showAllDepartures
-                      ? Icons.expand_less_rounded
-                      : Icons.expand_more_rounded,
-                  label: _showAllDepartures
-                      ? l10n.commonShowLess
-                      : l10n.commonShowMore,
-                  variant: BigButtonVariant.outlined,
-                  expanded: true,
-                  onPressed: () =>
-                      setState(() => _showAllDepartures = !_showAllDepartures),
-                ),
             ],
           ],
         ),

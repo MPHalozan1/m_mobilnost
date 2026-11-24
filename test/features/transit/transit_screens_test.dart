@@ -212,7 +212,7 @@ void main() {
     // Switch direction using Reverse direction button.
     await tester.tap(find.text('Reverse direction'));
     await tester.pumpAndSettle();
-    expect(find.text('Direction: Melje – AP Maribor – Vzpenjača'), findsWidgets);
+    expect(find.text('Direction: Vzpenjača – UKC – AP Maribor'), findsWidgets);
 
     // Toggle map to list view.
     await tester.tap(find.text('List'));

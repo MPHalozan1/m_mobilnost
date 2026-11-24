@@ -47,6 +47,8 @@ class _TicketViewScreenState extends ConsumerState<TicketViewScreen> {
   bool _brightnessBoosted = false;
   bool _validatingNfc = false;
   DateTime? _nfcValidatedAt;
+  NfcCardReaderStatus? _nfcStatus;
+  bool _nfcHceArmed = false;
 
   @override
   void initState() {
@@ -59,6 +61,38 @@ class _TicketViewScreenState extends ConsumerState<TicketViewScreen> {
       });
     });
     unawaited(_boostBrightness());
+    unawaited(_initNfcStatus());
+  }
+
+  Future<void> _initNfcStatus() async {
+    final reader = ref.read(ticketCardReaderProvider);
+    final status = await reader.readCardStatus();
+    Ticket? ticket = ref.read(ticketByIdProvider(widget.ticketId)).valueOrNull;
+    if (ticket == null) {
+      try {
+        final tickets = await ref.read(userTicketsProvider.future);
+        for (final candidate in tickets) {
+          if (candidate.id == widget.ticketId) {
+            ticket = candidate;
+            break;
+          }
+        }
+      } catch (_) {
+        ticket = null;
+      }
+    }
+    var armed = status.isHceArmed;
+    if (ticket != null) {
+      armed = await reader.armTicketForNfc(
+        ticketId: ticket.id,
+        payload: ticket.qrPayload,
+      );
+    }
+    if (!mounted) return;
+    setState(() {
+      _nfcStatus = status;
+      _nfcHceArmed = armed;
+    });
   }
 
   @override
@@ -119,7 +153,11 @@ class _TicketViewScreenState extends ConsumerState<TicketViewScreen> {
     setState(() => _validatingNfc = true);
     try {
       final reader = ref.read(ticketCardReaderProvider);
-      await reader.readCardStatus();
+      final status = await reader.readCardStatus();
+      await reader.armTicketForNfc(
+        ticketId: ticket.id,
+        payload: ticket.qrPayload,
+      );
       final validatedTime = await reader.simulateTapValidation(ticket.id);
       await ref.read(ticketRepositoryProvider).validateTicket(ticket.id);
       unawaited(
@@ -130,7 +168,11 @@ class _TicketViewScreenState extends ConsumerState<TicketViewScreen> {
         ),
       );
       if (!mounted) return;
-      setState(() => _nfcValidatedAt = validatedTime);
+      setState(() {
+        _nfcValidatedAt = validatedTime;
+        _nfcStatus = status;
+        _nfcHceArmed = true;
+      });
       unawaited(announceForAccessibility(context, l10n.ticketsNfcValidated));
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -404,6 +446,15 @@ class _TicketViewScreenState extends ConsumerState<TicketViewScreen> {
               ),
               const SizedBox(height: 16),
               Card(
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(18),
+                  side: BorderSide(
+                    color: _nfcHceArmed
+                        ? MarpromColors.marpromRed
+                        : scheme.outlineVariant,
+                    width: _nfcHceArmed ? 2 : 1,
+                  ),
+                ),
                 child: Padding(
                   padding: const EdgeInsets.all(16),
                   child: Column(
@@ -415,21 +466,104 @@ class _TicketViewScreenState extends ConsumerState<TicketViewScreen> {
                         spacing: 8,
                         runSpacing: 8,
                         children: [
-                          Text(
-                            l10n.ticketsNfcStubTitle,
-                            style: Theme.of(context).textTheme.titleMedium,
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.all(8),
+                                decoration: BoxDecoration(
+                                  color: MarpromColors.marpromRed
+                                      .withValues(alpha: 0.12),
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
+                                child: const Icon(
+                                  Icons.contactless_rounded,
+                                  color: MarpromColors.marpromRed,
+                                ),
+                              ),
+                              const SizedBox(width: 10),
+                              Flexible(
+                                child: Text(
+                                  l10n.ticketsNfcStubTitle,
+                                  style:
+                                      Theme.of(context).textTheme.titleMedium,
+                                ),
+                              ),
+                            ],
                           ),
                           StatusChip(
-                            type: TransitStatusType.info,
-                            label: l10n.ticketsNfcComingSoon,
+                            type: (_nfcStatus?.isAvailable ?? false)
+                                ? TransitStatusType.onTime
+                                : TransitStatusType.info,
+                            label: (_nfcStatus?.isAvailable ?? false)
+                                ? 'NFC HCE aktiven'
+                                : l10n.ticketsNfcComingSoon,
                             compact: true,
                           ),
                         ],
                       ),
+                      const SizedBox(height: 10),
+                      // Metallic contactless phone-chip pass banner
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(14),
+                          gradient: const LinearGradient(
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                            colors: [
+                              MarpromColors.marpromCharcoal,
+                              MarpromColors.marpromBurgundy,
+                            ],
+                          ),
+                        ),
+                        child: Row(
+                          children: [
+                            Container(
+                              width: 42,
+                              height: 30,
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFEAB308),
+                                borderRadius: BorderRadius.circular(6),
+                              ),
+                              child: const Icon(
+                                Icons.sim_card_outlined,
+                                color: Color(0xFF422006),
+                                size: 20,
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    'Marprom NFC SmartPass (${_nfcStatus?.aidHex ?? PlatformNfcTicketCardReader.marpromAidHex})${_nfcHceArmed ? ' • NFC pripravljen' : ''}',
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.w800,
+                                      fontSize: 12.5,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    _nfcStatus?.message ?? l10n.ticketsNfcStubBody,
+                                    style: const TextStyle(
+                                      color: Color(0xFFCBD5E1),
+                                      fontSize: 11.5,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
                       const SizedBox(height: 8),
                       Text(
                         l10n.ticketsNfcStubBody,
-                        style: Theme.of(context).textTheme.bodyLarge,
+                        style: Theme.of(context).textTheme.bodyMedium,
                       ),
                       if (validatedTime != null) ...[
                         const SizedBox(height: 10),
@@ -437,6 +571,17 @@ class _TicketViewScreenState extends ConsumerState<TicketViewScreen> {
                           type: TransitStatusType.onTime,
                           label: '${l10n.ticketsNfcValidated} '
                               '(${TimeFormatUtils.formatTime24(validatedTime)})',
+                        ),
+                      ],
+                      if (_nfcStatus?.mode == NfcHardwareMode.nfcDisabled) ...[
+                        const SizedBox(height: 10),
+                        BigButton(
+                          icon: Icons.settings_rounded,
+                          label: 'Vklopi NFC v nastavitvah telefona',
+                          variant: BigButtonVariant.secondary,
+                          expanded: true,
+                          onPressed: () =>
+                              ref.read(ticketCardReaderProvider).openNfcSettings(),
                         ),
                       ],
                       const SizedBox(height: 14),

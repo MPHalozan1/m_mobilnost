@@ -5,8 +5,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../core/accessibility/a11y_settings.dart';
+import '../../../core/firebase/firebase_bootstrap.dart';
 import '../../../core/theme/colors.dart';
 import '../../../core/widgets/offline_banner.dart';
+import '../../../data/repositories/repository_providers.dart';
+import '../../account/providers/account_providers.dart';
 import '../../live_tracker/domain/fleet_statistics_provider.dart';
 import 'marprom_web_strings.dart';
 
@@ -265,6 +268,7 @@ class _CorporateUtilityBar extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final notifier = ref.read(a11ySettingsProvider.notifier);
+    final activeUser = ref.watch(activeUserProvider);
 
     return Container(
       color: MarpromColors.marpromCharcoal,
@@ -403,6 +407,53 @@ class _CorporateUtilityBar extends ConsumerWidget {
                       ),
                     ),
                   ),
+                  if (activeUser == null)
+                    GoogleSignInButton(
+                      compact: true,
+                      label: settings.localeCode == 'sl'
+                          ? 'Google prijava'
+                          : 'Google Sign-In',
+                      onPressed: () {
+                        ref.read(authRepositoryProvider).signInWithGoogle(
+                              preferredLocaleCode: settings.localeCode,
+                            );
+                      },
+                    )
+                  else
+                    InkWell(
+                      onTap: () => context.go('/account'),
+                      borderRadius: BorderRadius.circular(18),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 5,
+                        ),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF1E293B),
+                          borderRadius: BorderRadius.circular(18),
+                          border: Border.all(color: const Color(0xFF475569)),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(
+                              Icons.account_circle_rounded,
+                              color: Color(0xFF38BDF8),
+                              size: 16,
+                            ),
+                            const SizedBox(width: 6),
+                            Text(
+                              activeUser.name,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 11.5,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
                 ],
               ),
             ],

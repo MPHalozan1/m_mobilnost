@@ -3,6 +3,7 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
+import 'package:latlong2/latlong.dart';
 import 'package:m_mobilnost/core/utils/geo.dart';
 
 import '../models/bus_position.dart';
@@ -36,12 +37,28 @@ class BusSimulator {
   final DateTime Function() _clock;
   late final StreamController<List<BusPosition>> _controller;
 
+  final Map<String, List<LatLng>> _googleRouteGeometries = {};
   int _seed;
   bool _useSimulatedLive;
   DelayModel _delayModel;
   OccupancyModel _occupancyModel;
   Timer? _timer;
   bool _disposed = false;
+
+  /// Updates simulated routes with real street polylines returned by Google Routes API v2.
+  void setGoogleRouteGeometries(Map<String, List<LatLng>> geometries) {
+    if (_disposed || geometries.isEmpty) return;
+    var changed = false;
+    for (final entry in geometries.entries) {
+      if (entry.value.length >= 2) {
+        _googleRouteGeometries[entry.key] = entry.value;
+        changed = true;
+      }
+    }
+    if (changed && _controller.hasListener) {
+      _emitCurrent();
+    }
+  }
 
   /// Current RNG seed used for delays and occupancy.
   int get seed => _seed;
@@ -97,7 +114,9 @@ class BusSimulator {
           date: now,
         );
           final simulationPolyline =
-              direction.roadPolyline ?? direction.polyline;
+              _googleRouteGeometries['${line.id}|${direction.id}'] ??
+                  direction.roadPolyline ??
+                  direction.polyline;
           final polylineMeters =
               GeoUtils.polylineLengthMeters(simulationPolyline);
 

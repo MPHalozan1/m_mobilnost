@@ -66,9 +66,11 @@ void main() {
       ];
       expect(seedLines.map((l) => l.code).toList(), expectedCodes);
 
-      // Every day of the week (Mon-Sun) generates valid trips for all 19 lines.
+      // Monday-Saturday operate all 19 lines; Sunday/Holidays suspend G5, P9, P13, P14, P17, P19.
+      const noSundayLines = {'G5', 'P9', 'P13', 'P14', 'P17', 'P19'};
       for (var weekday = DateTime.monday; weekday <= DateTime.sunday; weekday++) {
         final date = sampleDateForWeekday(weekday);
+        final dayType = scheduleTypeForDate(date);
         expect(date.weekday, weekday);
         for (final line in seedLines) {
           final trips = generateTripsForDirection(
@@ -76,7 +78,14 @@ void main() {
             direction: line.directions.first,
             date: date,
           );
-          expect(trips, isNotEmpty, reason: '${line.code} day $weekday empty');
+          if (dayType == DayScheduleType.sundayHoliday &&
+              noSundayLines.contains(line.id)) {
+            expect(doesLineOperateOn(line.id, dayType), isFalse);
+            expect(trips, isEmpty, reason: '${line.code} should not run on Sunday');
+          } else {
+            expect(doesLineOperateOn(line.id, dayType), isTrue);
+            expect(trips, isNotEmpty, reason: '${line.code} day $weekday empty');
+          }
         }
       }
     });
@@ -142,6 +151,20 @@ void main() {
       expect(decoded.length, 3);
       expect(decoded.first.latitude, closeTo(38.5, 0.01));
       expect(decoded.first.longitude, closeTo(-120.2, 0.01));
+      final reEncoded = GoogleRoutesService.encodeGooglePolyline(decoded);
+      expect(GoogleRoutesService.decodeGooglePolyline(reEncoded).length, 3);
+
+      // BusSimulator accepts road geometries pushed from Google Routes API.
+      final sim = BusSimulator(seed: 42, useSimulatedLive: true);
+      addTearDown(sim.dispose);
+      sim.setGoogleRouteGeometries({
+        'G1|G1_out': [
+          const LatLng(46.5587, 15.6557),
+          const LatLng(46.5450, 15.6620),
+          const LatLng(46.5198, 15.6835),
+        ],
+      });
+      expect(sim.snapshotAt(DateTime(2026, 11, 23, 8, 10)), isNotEmpty);
     });
 
     test('buildOfflineFallback estimates road distance from Maribor coordinates', () {
@@ -179,6 +202,7 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('MARPROM'), findsWidgets);
+      expect(find.text('Google prijava'), findsOneWidget);
       expect(find.textContaining('Povezujemo Maribor'), findsOneWidget);
       expect(find.text('G1'), findsWidgets);
       expect(find.text('P19'), findsWidgets);
@@ -186,6 +210,7 @@ void main() {
       // Switch to English via top corporate navbar pill.
       await tester.tap(find.text('EN'));
       await tester.pumpAndSettle();
+      expect(find.text('Google Sign-In'), findsOneWidget);
       expect(find.textContaining('Connecting Maribor'), findsOneWidget);
     });
 

@@ -4,6 +4,7 @@ import 'dart:async';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../../core/firebase/firebase_bootstrap.dart';
 import '../models/user_profile.dart';
 import '../repositories/auth_repository.dart';
 import 'local_storage_helper.dart';
@@ -148,7 +149,50 @@ class MockAuthRepository implements AuthRepository {
   }
 
   @override
+  Future<UserProfile> signInWithGoogle({
+    String? googleEmail,
+    String? googleDisplayName,
+    String? photoUrl,
+    String preferredLocaleCode = 'sl',
+  }) async {
+    final firebaseIdentity = await GoogleAuthBridge.authenticate();
+    final resolvedEmail =
+        (firebaseIdentity?.email ?? googleEmail ?? 'potnik.maribor@gmail.com')
+            .trim()
+            .toLowerCase();
+    final resolvedName = firebaseIdentity?.displayName ??
+        googleDisplayName ??
+        'Luka Maribor (Google)';
+    final resolvedId = firebaseIdentity?.uid ??
+        'google_${resolvedEmail.hashCode.abs()}';
+
+    final profile = UserProfile(
+      id: resolvedId,
+      email: resolvedEmail,
+      name: resolvedName,
+      preferredLocaleCode: preferredLocaleCode,
+      photoUrl: firebaseIdentity?.photoUrl ?? photoUrl,
+      authProvider: 'google',
+      createdAt: DateTime.now(),
+    );
+
+    _accounts[resolvedEmail] = _StoredAccount(
+      password: demoPassword,
+      profile: profile,
+    );
+    await _store.write('acct_$resolvedEmail', {
+      'password': demoPassword,
+      'profile': profile.toJson(),
+    });
+    _currentUser = profile;
+    await _store.write('active_user', profile.toJson());
+    _emit(profile);
+    return profile;
+  }
+
+  @override
   Future<void> signOut() async {
+    await GoogleAuthBridge.signOut();
     _currentUser = null;
     await _store.delete('active_user');
     _emit(null);
@@ -186,6 +230,7 @@ class MockAuthRepository implements AuthRepository {
 
   @override
   Future<void> deleteAccount() async {
+    await GoogleAuthBridge.signOut();
     final activeEmail = _currentUser?.email.toLowerCase();
     if (activeEmail != null && activeEmail != demoEmail) {
       _accounts.remove(activeEmail);

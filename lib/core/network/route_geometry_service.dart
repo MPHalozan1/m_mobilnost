@@ -1,45 +1,54 @@
-// Resolves drivable road geometry via Google Routes API v2 with OSRM & linear fallbacks.
+// Resolves & caches Google Maps Routes API v2 street geometries for all 19 Marprom bus lines.
 
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
+import '../../data/models/bus_line.dart';
+import '../../data/repositories/repository_providers.dart';
 import '../../data/seed/seed_lines.dart';
+import '../../data/simulation/bus_simulator.dart';
+import '../accessibility/a11y_settings.dart';
+import '../maps/google_web_views.dart';
 import 'google_routes_service.dart';
 
-/// Loads accurate drivable road geometry for seeded Marprom bus routes.
-/// Uses Google Routes API v2 first, then OSRM, falling back to interpolated stops offline.
+const String _routeCachePrefix = 'marprom_groute_v3_';
+
+/// Loads accurate drivable road geometry for a single seeded Marprom bus direction
+/// (`'lineId|directionId'`) using Google Routes API v2 first, then OSRM, then dense fallback.
 final routeGeometryProvider =
     FutureProvider.family<List<LatLng>, String>((ref, key) async {
+  final cached = ref.read(googleLineRoutesProvider)[key];
+  if (cached != null && cached.polylinePoints.length >= 2) {
+    return cached.polylinePoints;
+  }
+
   final parts = key.split('|');
   if (parts.length != 2) return const <LatLng>[];
 
   final line = seedLinesById[parts.first];
   final direction = line?.directionById(parts.last);
-  if (direction == null || direction.polyline.length < 2) {
+  if (line == null || direction == null || direction.polyline.length < 2) {
     return const <LatLng>[];
   }
 
   final fallback = _densify(direction.polyline);
-  final googleRoutes = ref.read(googleRoutesServiceProvider);
-
-  // 1. Try Google Routes API v2 with intermediate stops.
-  final waypoints = direction.polyline;
-  final googleResult = await googleRoutes.computeRouteByCoordinates(
-    origin: waypoints.first,
-    destination: waypoints.last,
-    intermediates: waypoints.length > 2
-        ? waypoints.sublist(1, waypoints.length - 1)
-        : const [],
-    includePolyline: true,
-  );
-  if (googleResult.isLiveApi && googleResult.polylinePoints.length >= 2) {
-    return googleResult.polylinePoints;
+  if (isFlutterTestEnvironment) {
+    return fallback;
   }
 
-  // 2. Fallback to OSRM driving geometry if Google Routes API is unavailable or restricted.
+  final liveResult = await ref
+      .read(googleLineRoutesProvider.notifier)
+      .ensureLineDirectionLoaded(line, direction);
+  if (liveResult != null && liveResult.polylinePoints.length >= 2) {
+    return liveResult.polylinePoints;
+  }
+
+  // Fallback to OSRM driving geometry if Google Routes API is unavailable or restricted.
   final coordinates = direction.polyline
       .map((point) => '${point.longitude},${point.latitude}')
       .join(';');
@@ -71,6 +80,198 @@ final routeGeometryProvider =
   } catch (_) {
     return fallback;
   }
+});
+
+/// Manages Google Maps Routes API (`computeRoutes`) road geometries & metrics for all
+/// live Marprom bus lines, caching responses in [SharedPreferences] and pushing
+/// street polylines into [BusSimulator].
+class GoogleLineRoutesNotifier
+    extends StateNotifier<Map<String, GoogleRouteResult>> {
+  /// Creates a [GoogleLineRoutesNotifier] pre-populating from local cache if available.
+  GoogleLineRoutesNotifier({
+    required this._routesService,
+    required this._simulator,
+    this._prefs,
+  }) : super(const {}) {
+    _hydrateFromCache();
+  }
+
+  final GoogleRoutesService _routesService;
+  final BusSimulator _simulator;
+  final SharedPreferences? _prefs;
+  final Set<String> _inFlight = {};
+  bool _warmedAll = false;
+
+  void _hydrateFromCache() {
+    final prefs = _prefs;
+    if (prefs == null) return;
+    final restored = <String, GoogleRouteResult>{};
+    final simMap = <String, List<LatLng>>{};
+
+    for (final line in seedLines) {
+      for (final dir in line.directions) {
+        final key = '${line.id}|${dir.id}';
+        final raw = prefs.getString('$_routeCachePrefix$key');
+        if (raw == null || raw.isEmpty) continue;
+        try {
+          final decoded = jsonDecode(raw) as Map<String, dynamic>;
+          final encoded = decoded['encodedPolyline'] as String?;
+          final distanceMeters = (decoded['distanceMeters'] as num?)?.round();
+          final rawDuration = decoded['rawDuration'] as String?;
+          final isLive = decoded['isLiveApi'] as bool? ?? false;
+          if (encoded != null &&
+              encoded.isNotEmpty &&
+              distanceMeters != null &&
+              rawDuration != null) {
+            final points = GoogleRoutesService.decodeGooglePolyline(encoded);
+            if (points.length >= 2) {
+              restored[key] = GoogleRouteResult(
+                distanceMeters: distanceMeters,
+                durationSeconds:
+                    GoogleRoutesService.parseDurationSeconds(rawDuration),
+                rawDuration: rawDuration,
+                polylinePoints: points,
+                isLiveApi: isLive,
+                encodedPolyline: encoded,
+              );
+              simMap[key] = points;
+            }
+          }
+        } catch (_) {
+          // Ignore malformed cache entries.
+        }
+      }
+    }
+
+    if (restored.isNotEmpty) {
+      state = restored;
+      _simulator.setGoogleRouteGeometries(simMap);
+    }
+  }
+
+  /// Resolves a single [line] & [direction] via Google Routes API v2 (`computeRoutes`)
+  /// and caches it locally + inside [BusSimulator].
+  Future<GoogleRouteResult?> ensureLineDirectionLoaded(
+    BusLine line,
+    LineDirection direction, {
+    bool forceInTests = false,
+  }) async {
+    final key = '${line.id}|${direction.id}';
+    final existing = state[key];
+    if (existing != null && existing.isLiveApi) {
+      return existing;
+    }
+    if (isFlutterTestEnvironment && !forceInTests) {
+      return existing;
+    }
+    if (_inFlight.contains(key)) {
+      return existing;
+    }
+    if (direction.polyline.length < 2) return null;
+
+    _inFlight.add(key);
+    try {
+      final result = await _routesService.computeRouteByCoordinates(
+        origin: direction.polyline.first,
+        destination: direction.polyline.last,
+        intermediates: direction.polyline.length > 2
+            ? direction.polyline.sublist(1, direction.polyline.length - 1)
+            : const [],
+        includePolyline: true,
+      );
+
+      final resolvedPoints = result.polylinePoints.length >= 2
+          ? result.polylinePoints
+          : _densify(direction.polyline);
+      final normalized = GoogleRouteResult(
+        distanceMeters: result.distanceMeters,
+        durationSeconds: result.durationSeconds,
+        rawDuration: result.rawDuration,
+        polylinePoints: resolvedPoints,
+        isLiveApi: result.isLiveApi,
+        encodedPolyline: result.encodedPolyline ??
+            GoogleRoutesService.encodeGooglePolyline(resolvedPoints),
+      );
+
+      state = {...state, key: normalized};
+
+      if (normalized.isLiveApi && resolvedPoints.length >= 2) {
+        _simulator.setGoogleRouteGeometries({key: resolvedPoints});
+        await _persistEntry(key, normalized);
+      }
+
+      return normalized;
+    } finally {
+      _inFlight.remove(key);
+    }
+  }
+
+  /// Hydrates Google Routes API street polylines for both directions of [lineId].
+  Future<void> ensureLineLoaded(
+    String lineId, {
+    bool forceInTests = false,
+  }) async {
+    final line = seedLinesById[lineId];
+    if (line == null) return;
+    if (isFlutterTestEnvironment && !forceInTests) return;
+
+    await Future.wait([
+      for (final dir in line.directions)
+        ensureLineDirectionLoaded(line, dir, forceInTests: forceInTests),
+    ]);
+  }
+
+  /// Warms Google Routes geometries for priority / all active lines without blocking UI.
+  Future<void> warmAllActiveLines({
+    Iterable<String>? lineIds,
+    bool forceInTests = false,
+  }) async {
+    if (isFlutterTestEnvironment && !forceInTests) return;
+    if (_warmedAll && lineIds == null) return;
+    if (lineIds == null) _warmedAll = true;
+
+    final targets = lineIds?.toList(growable: false) ??
+        [for (final line in seedLines) line.id];
+
+    // Hydrate in batches of 3 to avoid saturating browser/mobile connections.
+    for (var i = 0; i < targets.length; i += 3) {
+      final batch = targets.skip(i).take(3);
+      await Future.wait([
+        for (final id in batch)
+          ensureLineLoaded(id, forceInTests: forceInTests),
+      ]);
+    }
+  }
+
+  Future<void> _persistEntry(String key, GoogleRouteResult result) async {
+    final prefs = _prefs;
+    if (prefs == null || result.encodedPolyline == null) return;
+    await prefs.setString(
+      '$_routeCachePrefix$key',
+      jsonEncode({
+        'distanceMeters': result.distanceMeters,
+        'rawDuration': result.rawDuration,
+        'encodedPolyline': result.encodedPolyline,
+        'isLiveApi': result.isLiveApi,
+      }),
+    );
+  }
+}
+
+/// Provides live-resolved Google Maps Routes geometries across all 19 Marprom lines.
+final googleLineRoutesProvider = StateNotifierProvider<
+    GoogleLineRoutesNotifier, Map<String, GoogleRouteResult>>((ref) {
+  SharedPreferences? prefs;
+  try {
+    prefs = ref.watch(sharedPreferencesProvider);
+  } catch (_) {
+    prefs = null;
+  }
+  return GoogleLineRoutesNotifier(
+    routesService: ref.watch(googleRoutesServiceProvider),
+    simulator: ref.watch(busSimulatorProvider),
+    prefs: prefs,
+  );
 });
 
 List<LatLng> _densify(List<LatLng> stops) {
