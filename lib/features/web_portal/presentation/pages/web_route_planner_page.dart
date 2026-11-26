@@ -114,39 +114,32 @@ class _WebRoutePlannerPageState extends ConsumerState<WebRoutePlannerPage> {
     final fromStop = seedStopsById[_fromStopId];
     final toStop = seedStopsById[_toStopId];
 
-    GoogleRouteResult routeResult;
+    GoogleRouteResult? routeResult;
     List<TripOption> transitOptions = const [];
+    String? errorMsg;
 
-    if (_useCustomAddress) {
-      routeResult = isFlutterTestEnvironment
-          ? GoogleRoutesService.buildOfflineFallback(
-              origin: const LatLng(46.5594, 15.6561),
-              destination: const LatLng(46.5343, 15.6042),
-            )
-          : await routesService.computeRouteByAddresses(
-              originAddress: _originAddressController.text.trim(),
-              destinationAddress: _destAddressController.text.trim(),
-              travelMode: 'DRIVE',
-              avoidTolls: _avoidTolls,
-              avoidHighways: _avoidHighways,
-            );
-    } else if (fromStop != null && toStop != null) {
-      final results = await Future.wait([
-        isFlutterTestEnvironment
-            ? Future.value(
-                GoogleRoutesService.buildOfflineFallback(
-                  origin: fromStop.position,
-                  destination: toStop.position,
-                ),
-              )
-            : routesService.computeRouteByCoordinates(
-                origin: fromStop.position,
-                destination: toStop.position,
-                travelMode: 'DRIVE',
-                avoidTolls: _avoidTolls,
-                avoidHighways: _avoidHighways,
-              ),
-        planner.planTrip(
+    try {
+      if (_useCustomAddress) {
+        final fromMatch = seedStops.firstWhere(
+          (s) => _originAddressController.text.toLowerCase().contains(s.name.toLowerCase()),
+          orElse: () => seedStops.first,
+        );
+        final toMatch = seedStops.firstWhere(
+          (s) => _destAddressController.text.toLowerCase().contains(s.name.toLowerCase()),
+          orElse: () => seedStops.last,
+        );
+        transitOptions = await planner.planTrip(
+          origin: fromMatch.position,
+          destination: toMatch.position,
+          originLabel: _originAddressController.text.trim(),
+          destinationLabel: _destAddressController.text.trim(),
+          accessibleOnly: _accessibleOnly,
+          sortMode: _sortMode,
+          fewerTransfers: _sortMode == TripSortMode.fewestTransfers,
+          targetTime: DateTime.now(),
+        );
+      } else if (fromStop != null && toStop != null) {
+        transitOptions = await planner.planTrip(
           origin: fromStop.position,
           destination: toStop.position,
           originLabel: fromStop.name,
@@ -155,14 +148,30 @@ class _WebRoutePlannerPageState extends ConsumerState<WebRoutePlannerPage> {
           sortMode: _sortMode,
           fewerTransfers: _sortMode == TripSortMode.fewestTransfers,
           targetTime: DateTime.now(),
-        ),
-      ]);
-      routeResult = results[0] as GoogleRouteResult;
-      transitOptions = results[1] as List<TripOption>;
-    } else {
-      routeResult = GoogleRoutesService.buildOfflineFallback(
-        origin: const LatLng(46.5594, 15.6561),
-        destination: const LatLng(46.5343, 15.6042),
+        );
+        if (!isFlutterTestEnvironment) {
+          routeResult = await routesService.computeRouteByCoordinates(
+            origin: fromStop.position,
+            destination: toStop.position,
+            travelMode: 'DRIVE',
+            avoidTolls: _avoidTolls,
+            avoidHighways: _avoidHighways,
+          );
+        }
+      }
+    } catch (e) {
+      errorMsg = e.toString();
+    }
+
+    if (routeResult == null && transitOptions.isNotEmpty) {
+      final top = transitOptions.first;
+      final pts = [for (final l in top.legs) ...l.polyline];
+      routeResult = GoogleRouteResult(
+        distanceMeters: top.legs.fold<double>(0, (s, l) => s + l.distanceMeters).round(),
+        durationSeconds: top.totalMinutes * 60,
+        rawDuration: '${top.totalMinutes * 60}s',
+        polylinePoints: pts,
+        isLiveApi: top.isGoogleTransit,
       );
     }
 
@@ -172,6 +181,11 @@ class _WebRoutePlannerPageState extends ConsumerState<WebRoutePlannerPage> {
       _busOptions = transitOptions;
       _selectedOptionIndex = 0;
       _loading = false;
+      if (errorMsg != null && transitOptions.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(errorMsg)),
+        );
+      }
     });
   }
 

@@ -42,7 +42,7 @@ abstract class AuthRepository {
     bool guardianConfirmed = false,
   });
 
-  /// Signs in using a Google Account (Firebase OAuth when configured, or local preview Google profile).
+  // Signs in using a Google Account (Firebase OAuth when configured, or local preview Google profile).
   Future<UserProfile> signInWithGoogle({
     String? googleEmail,
     String? googleDisplayName,
@@ -50,7 +50,13 @@ abstract class AuthRepository {
     String preferredLocaleCode = 'sl',
   });
 
-  /// Ends the active session and switches to guest mode.
+  // Automatically creates or restores a Demo Passenger account (Firebase Anonymous Auth
+  // when configured, with local preview fallback) so features work out-of-the-box.
+  Future<UserProfile> signInDemoAccount({
+    String preferredLocaleCode = 'sl',
+  });
+
+  // Ends the active session and switches to guest mode.
   Future<void> signOut();
 
   /// Sends a password reset request for [email].

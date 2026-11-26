@@ -1,5 +1,5 @@
 //**********************************************
-// Bundled bus-line road geometry service      *
+// Google Routes Bus-Line Road Geometry Cache  *
 //**********************************************
 
 import 'dart:async';
@@ -10,12 +10,24 @@ import 'package:latlong2/latlong.dart';
 import '../../data/models/bus_line.dart';
 import '../../data/models/trip_plan.dart';
 import '../../data/seed/seed_lines.dart';
+import '../../data/seed/seed_stops.dart';
 import '../../data/seed/seed_timetables.dart';
+import '../maps/google_web_views.dart';
 import '../utils/geo.dart';
 import 'google_routes_service.dart';
 
 //**********************************************
-// Polyline slicing & routeGeometryProvider    *
+// Road-snap overrides for off-street stops    *
+//**********************************************
+
+/// Coordinates snapped to nearby bus lanes for stops whose map pin sits inside
+/// a building or pedestrian plaza (prevents parking-lot loops in Google DRIVE).
+const Map<String, LatLng> _busStopRoadSnapOverrides = {
+  'europark': LatLng(46.55451, 15.65147),
+};
+
+//**********************************************
+// Polyline slicing & leg road-path resolver   *
 //**********************************************
 
 /// Slices the nearest contiguous segment between [start] and [end] along a road [polyline].
@@ -25,7 +37,7 @@ List<LatLng> slicePolylineBetweenPoints(
   LatLng end,
 ) {
   if (polyline.length < 2) {
-    return [start, end];
+    return polyline;
   }
 
   var startIdx = 0;
@@ -51,32 +63,41 @@ List<LatLng> slicePolylineBetweenPoints(
       : polyline.sublist(endIdx, startIdx + 1).reversed.toList(growable: true);
 
   final result = List<LatLng>.from(segment);
-  if (result.isEmpty) {
-    return [start, end];
-  }
-  if (GeoUtils.haversineMeters(result.first, start) > 25) {
-    result.insert(0, start);
-  }
-  if (GeoUtils.haversineMeters(result.last, end) > 25) {
-    result.add(end);
-  }
   if (result.length < 2) {
-    return [start, end];
+    return polyline;
   }
   return result;
 }
 
-/// Resolves the drawable path of a planned [leg].
-///
-/// A bus leg that rides a known Marprom line between two of its stops is
-/// drawn along the bundled bus road geometry
-/// ([LineDirection.roadPathBetween]); every other leg (walking, unknown
-/// lines or stops) keeps its own [TripLeg.polyline].
+/// Resolves the drawable road path of a planned [leg], preferring live Google
+/// Routes cached polylines when available and preserving `leg.polyline` otherwise.
 List<LatLng> roadPathForBusLeg(
   TripLeg leg, {
   Map<String, BusLine>? linesById,
+  Map<String, GoogleRouteResult>? cachedGoogleRoutes,
 }) {
   if (leg.type != TripLegType.bus) return leg.polyline;
+
+  // Prefer live Google Routes cached road trajectory when loaded
+  if (cachedGoogleRoutes != null &&
+      leg.lineId != null &&
+      leg.polyline.length >= 2) {
+    final key = leg.directionId != null
+        ? '${leg.lineId}|${leg.directionId}'
+        : '${leg.lineId}|${leg.lineId}_out';
+    final liveRoute = cachedGoogleRoutes[key];
+    if (liveRoute != null &&
+        liveRoute.isLiveApi &&
+        liveRoute.polylinePoints.length >= 2) {
+      final sliced = slicePolylineBetweenPoints(
+        liveRoute.polylinePoints,
+        leg.polyline.first,
+        leg.polyline.last,
+      );
+      if (sliced.length >= 2) return sliced;
+    }
+  }
+
   final match = matchBusLegToLine(leg, linesById: linesById);
   if (match == null) return leg.polyline;
   final path = match.$1.roadPathBetween(match.$2, match.$3);
@@ -85,9 +106,6 @@ List<LatLng> roadPathForBusLeg(
 
 /// Finds the [LineDirection] and stop indices (`fromIdx < toIdx`) a bus [leg]
 /// rides on, or null when the line or its stops are unknown.
-///
-/// Uses [TripLeg.directionId] when set, otherwise the first direction of the
-/// line that visits the leg's from-stop before its to-stop.
 (LineDirection, int, int)? matchBusLegToLine(
   TripLeg leg, {
   Map<String, BusLine>? linesById,
@@ -110,21 +128,24 @@ List<LatLng> roadPathForBusLeg(
   return null;
 }
 
-/// Bundled road-following geometry for a single Marprom line direction
-/// (`'lineId|directionId'`). No network call.
+/// Builds road-following geometry for a single Marprom line direction
+/// (`'lineId|directionId'`) using Google Routes API v2 + Firestore caching.
 final routeGeometryProvider =
     FutureProvider.family<List<LatLng>, String>((ref, key) async {
   final parts = key.split('|');
   if (parts.length != 2) return const <LatLng>[];
-  final direction = seedLinesById[parts.first]?.directionById(parts.last);
-  if (direction == null || direction.polyline.length < 2) {
+  final line = seedLinesById[parts.first];
+  final direction = line?.directionById(parts.last);
+  if (line == null || direction == null || direction.stopIds.length < 2) {
     return const <LatLng>[];
   }
-  return direction.routePolyline;
+  final loaded = await ref
+      .read(googleLineRoutesProvider.notifier)
+      .ensureLineDirectionLoaded(line, direction);
+  return loaded?.polylinePoints ?? const <LatLng>[];
 });
 
-/// Builds the route summary (road geometry, road length, scheduled run time)
-/// of [direction] from the bundled geometry. Not a live Google result.
+/// Builds route summary metrics from bundled geometry (used in unit tests).
 GoogleRouteResult bundledLineRouteResult(LineDirection direction) {
   final points = direction.routePolyline;
   final offsets = computeStopOffsetsSeconds(direction);
@@ -145,13 +166,19 @@ GoogleRouteResult bundledLineRouteResult(LineDirection direction) {
 /// Road geometries & metrics (distance, scheduled duration) for every Marprom
 /// line direction, keyed `'lineId|directionId'`.
 ///
-/// Built from the bundled stop-to-stop road geometry; it used to request each
-/// line from Google Routes API with all stops as waypoints, which drew loops
-/// and zig-zags wherever a stop snapped to the wrong side of a road.
+/// In live execution, resolves each line direction via [GoogleRoutesService.computeBusLineRoadPath]
+/// (`travelMode: DRIVE`, `via: true` waypoints chunked <= 25, cached in memory
+/// and Cloud Firestore `bus_lines/{lineId}.cachedRoadPolyline`).
 class GoogleLineRoutesNotifier
     extends StateNotifier<Map<String, GoogleRouteResult>> {
-  /// Creates a [GoogleLineRoutesNotifier] pre-populated with all seed lines.
-  GoogleLineRoutesNotifier() : super(_allSeedRoutes());
+  /// Creates a [GoogleLineRoutesNotifier].
+  GoogleLineRoutesNotifier({
+    this.routesService,
+  }) : super(isFlutterTestEnvironment ? _allSeedRoutes() : const {});
+
+  /// Active [GoogleRoutesService] used for live Google Drive road geometry.
+  final GoogleRoutesService? routesService;
+  final Map<String, Future<GoogleRouteResult?>> _inflight = {};
 
   static Map<String, GoogleRouteResult> _allSeedRoutes() => {
         for (final line in seedLines)
@@ -160,8 +187,17 @@ class GoogleLineRoutesNotifier
               '${line.id}|${dir.id}': bundledLineRouteResult(dir),
       };
 
-  /// Returns the bundled route of [line] & [direction], adding it to the
-  /// state when it is not a seed line yet.
+  static List<LatLng> _orderedStopsForGoogleDrive(LineDirection direction) {
+    return [
+      for (var i = 0; i < direction.stopIds.length; i++)
+        _busStopRoadSnapOverrides[direction.stopIds[i]] ??
+            seedStopsById[direction.stopIds[i]]?.position ??
+            direction.polyline[i],
+    ];
+  }
+
+  /// Ensures road-following Google Routes geometry for [line] & [direction]
+  /// is loaded and cached in memory + Firestore.
   Future<GoogleRouteResult?> ensureLineDirectionLoaded(
     BusLine line,
     LineDirection direction, {
@@ -169,14 +205,61 @@ class GoogleLineRoutesNotifier
   }) async {
     final key = '${line.id}|${direction.id}';
     final existing = state[key];
-    if (existing != null) return existing;
-    if (direction.polyline.length < 2) return null;
-    final result = bundledLineRouteResult(direction);
-    if (mounted) state = {...state, key: result};
-    return result;
+    if (!forceInTests &&
+        existing != null &&
+        existing.polylinePoints.length >= 2) {
+      return existing;
+    }
+
+    if (isFlutterTestEnvironment && !forceInTests) {
+      final bundled = bundledLineRouteResult(direction);
+      if (mounted) state = {...state, key: bundled};
+      return bundled;
+    }
+
+    final service = routesService;
+    if (service == null || (isFlutterTestEnvironment && !forceInTests)) {
+      if (direction.polyline.length < 2) return null;
+      final bundled = bundledLineRouteResult(direction);
+      if (mounted) state = {...state, key: bundled};
+      return bundled;
+    }
+
+    return _inflight[key] ??= () async {
+      try {
+        final orderedStops = _orderedStopsForGoogleDrive(direction);
+        final roadPoints = await service.computeBusLineRoadPath(
+          lineId: line.id,
+          orderedStops: orderedStops,
+          line: line,
+          cacheKey: key,
+        );
+        if (roadPoints.length < 2) return null;
+
+        final offsets = computeStopOffsetsSeconds(direction);
+        final schedSec = offsets.isEmpty ? 600 : offsets.last;
+        final result = GoogleRouteResult(
+          distanceMeters: GeoUtils.polylineLengthMeters(roadPoints).round(),
+          durationSeconds: schedSec,
+          rawDuration: '${schedSec}s',
+          polylinePoints: roadPoints,
+          isLiveApi: true,
+          encodedPolyline: GoogleRoutesService.encodeGooglePolyline(roadPoints),
+        );
+        if (mounted) {
+          state = {...state, key: result};
+        }
+        return result;
+      } catch (_) {
+        // Never fabricate straight lines if Google Routes API fails
+        return null;
+      } finally {
+        _inflight.remove(key);
+      }
+    }();
   }
 
-  /// Ensures both directions of [lineId] are available.
+  /// Ensures both directions of [lineId] are loaded via Google Routes API v2.
   Future<void> ensureLineLoaded(
     String lineId, {
     bool forceInTests = false,
@@ -184,22 +267,43 @@ class GoogleLineRoutesNotifier
     final line = seedLinesById[lineId];
     if (line == null) return;
     for (final dir in line.directions) {
-      await ensureLineDirectionLoaded(line, dir);
+      await ensureLineDirectionLoaded(
+        line,
+        dir,
+        forceInTests: forceInTests,
+      );
     }
   }
 
-  /// Ensures the routes of [lineIds] (or all seed lines) are available.
+  /// Pre-warms active Marprom line road geometries gently in small batches.
   Future<void> warmAllActiveLines({
     Iterable<String>? lineIds,
     bool forceInTests = false,
   }) async {
-    for (final id in lineIds ?? [for (final line in seedLines) line.id]) {
-      await ensureLineLoaded(id);
+    final targets =
+        (lineIds ?? [for (final line in seedLines) line.id]).toList();
+    // Load outbound direction first for instant map coverage, in batches of 4
+    for (var i = 0; i < targets.length; i += 4) {
+      final batch = targets.skip(i).take(4);
+      await Future.wait([
+        for (final id in batch)
+          if (seedLinesById[id] != null &&
+              seedLinesById[id]!.directions.isNotEmpty)
+            ensureLineDirectionLoaded(
+              seedLinesById[id]!,
+              seedLinesById[id]!.directions.first,
+              forceInTests: forceInTests,
+            ),
+      ]);
     }
   }
 }
 
-/// Provides the bundled road geometries across all 19 Marprom lines.
+/// Provides the cached Google Routes road geometries across all 19 Marprom lines.
 final googleLineRoutesProvider = StateNotifierProvider<
     GoogleLineRoutesNotifier,
-    Map<String, GoogleRouteResult>>((ref) => GoogleLineRoutesNotifier());
+    Map<String, GoogleRouteResult>>((ref) {
+  return GoogleLineRoutesNotifier(
+    routesService: ref.watch(googleRoutesServiceProvider),
+  );
+});

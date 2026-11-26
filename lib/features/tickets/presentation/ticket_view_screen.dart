@@ -52,6 +52,7 @@ class _TicketViewScreenState extends ConsumerState<TicketViewScreen> {
   DateTime? _nfcValidatedAt;
   NfcCardReaderStatus? _nfcStatus;
   bool _nfcHceArmed = false;
+  StreamSubscription<String>? _validatorTapSub;
 
   @override
   void initState() {
@@ -65,6 +66,12 @@ class _TicketViewScreenState extends ConsumerState<TicketViewScreen> {
     });
     unawaited(_boostBrightness());
     unawaited(_initNfcStatus());
+    _validatorTapSub =
+        ref.read(ticketCardReaderProvider).validatorTapStream.listen((id) {
+      if (!mounted || id != widget.ticketId) return;
+      setState(() => _nfcValidatedAt = DateTime.now());
+      unawaited(ref.read(ticketRepositoryProvider).validateTicket(widget.ticketId));
+    });
   }
 
   Future<void> _initNfcStatus() async {
@@ -100,6 +107,7 @@ class _TicketViewScreenState extends ConsumerState<TicketViewScreen> {
 
   @override
   void dispose() {
+    _validatorTapSub?.cancel();
     _clockTimer?.cancel();
     unawaited(_restoreBrightness());
     super.dispose();

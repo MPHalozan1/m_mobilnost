@@ -1,8 +1,40 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
     id("com.google.gms.google-services")
+}
+
+// Resolve GOOGLE_MAPS_API_KEY from Gradle property, local.properties, or root .env (never hardcoded).
+fun resolveMapsApiKey(): String {
+    val propKey = project.findProperty("GOOGLE_MAPS_API_KEY")?.toString()?.trim()
+    if (!propKey.isNullOrEmpty()) return propKey
+
+    val envVarKey = System.getenv("GOOGLE_MAPS_API_KEY")?.trim()
+    if (!envVarKey.isNullOrEmpty()) return envVarKey
+
+    val localPropsFile = rootProject.file("local.properties")
+    if (localPropsFile.exists()) {
+        val props = Properties()
+        localPropsFile.inputStream().use { props.load(it) }
+        val lpKey = props.getProperty("GOOGLE_MAPS_API_KEY")?.trim()
+        if (!lpKey.isNullOrEmpty()) return lpKey
+    }
+
+    val rootEnvFile = rootProject.file("../.env")
+    if (rootEnvFile.exists()) {
+        rootEnvFile.readLines().forEach { line ->
+            val trimmed = line.trim()
+            if (trimmed.startsWith("GOOGLE_MAPS_API_KEY=")) {
+                val value = trimmed.removePrefix("GOOGLE_MAPS_API_KEY=").trim()
+                if (value.isNotEmpty()) return value
+            }
+        }
+    }
+
+    return ""
 }
 
 android {
@@ -16,24 +48,17 @@ android {
     }
 
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId = "si.marprom.m_mobilnost"
-        // You can update the following values to match your application needs.
-        // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = maxOf(flutter.minSdkVersion, 23)
         targetSdk = flutter.targetSdkVersion
-        // Uses the version code from pubspec.yaml. When using split APKs, 1000 * ABI_VERSION
-        // is added automatically by Flutter. (https://developer.android.com/studio/build/configure-apk-splits#configure-APK-versions)
-        // You can force using the value of versionCode by specifying the `-P force-version-code-ignoring-abi=true`
-        // flag during build.
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+        manifestPlaceholders["GOOGLE_MAPS_API_KEY"] = resolveMapsApiKey()
     }
 
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
+            // Signing with debug keys for clean local release builds; swap with keystore for Play Store.
             signingConfig = signingConfigs.getByName("debug")
         }
     }

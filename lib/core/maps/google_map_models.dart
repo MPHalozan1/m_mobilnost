@@ -27,9 +27,12 @@ class GoogleMap3DMarkerData {
     required this.label,
     this.shortLabel,
     this.isBus = false,
+    this.isUserLocation = false,
+    this.isSelected = false,
     this.isWheelchairAccessible = true,
     this.headingDegrees = 0.0,
     this.color = const Color(0xFFC8102E),
+    this.statusColor,
     this.occupancyPercent,
     this.occupancyColor,
   });
@@ -49,6 +52,12 @@ class GoogleMap3DMarkerData {
   /// True for live buses; false for stops or transfer landmarks.
   final bool isBus;
 
+  /// True for the pulsing live GPS user location indicator.
+  final bool isUserLocation;
+
+  /// True when this bus or stop is currently focused/selected.
+  final bool isSelected;
+
   /// True when the bus or stop is wheelchair accessible.
   final bool isWheelchairAccessible;
 
@@ -57,6 +66,9 @@ class GoogleMap3DMarkerData {
 
   /// Accent color for markers and badges.
   final Color color;
+
+  /// Live status ring color (`normal` green, `delayed` amber, `full` red).
+  final Color? statusColor;
 
   /// Optional bus load (`0..100`) drawn as a small fill bar under bus pills.
   final int? occupancyPercent;
@@ -89,7 +101,7 @@ class GoogleMap3DPolylineData {
   /// Stroke width in logical pixels.
   final double strokeWidth;
 
-  /// True for pedestrian transfer segments rendered as dashed lines.
+  /// True for pedestrian sidewalk segments rendered as dashed lines.
   final bool isDashed;
 }
 
@@ -104,7 +116,7 @@ class GoogleMap3DCameraPreset {
     this.tilt = 60,
     this.heading = 18,
     this.range = 1750,
-    this.mobileZoom = 16.0,
+    this.mobileZoom = 17.2,
   });
 
   /// Preset ID.
@@ -137,7 +149,7 @@ const List<GoogleMap3DCameraPreset> maribor3DCameraPresets = [
     center: LatLng(46.5576, 15.6455),
     tilt: 60,
     heading: 18,
-    mobileZoom: 16.2,
+    mobileZoom: 17.2,
   ),
   GoogleMap3DCameraPreset(
     id: 'ap_maribor',
@@ -145,7 +157,7 @@ const List<GoogleMap3DCameraPreset> maribor3DCameraPresets = [
     center: LatLng(46.5594, 15.6561),
     tilt: 60,
     heading: 315,
-    mobileZoom: 16.2,
+    mobileZoom: 17.2,
   ),
   GoogleMap3DCameraPreset(
     id: 'ukc_tabor',
@@ -153,7 +165,7 @@ const List<GoogleMap3DCameraPreset> maribor3DCameraPresets = [
     center: LatLng(46.5495, 15.6465),
     tilt: 58,
     heading: 42,
-    mobileZoom: 15.8,
+    mobileZoom: 16.8,
   ),
   GoogleMap3DCameraPreset(
     id: 'vzpenjaca',
@@ -161,6 +173,6 @@ const List<GoogleMap3DCameraPreset> maribor3DCameraPresets = [
     center: LatLng(46.5343, 15.6042),
     tilt: 62,
     heading: 215,
-    mobileZoom: 15.8,
+    mobileZoom: 16.8,
   ),
 ];

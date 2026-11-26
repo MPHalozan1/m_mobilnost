@@ -18,13 +18,15 @@ class UserProfile {
     this.photoUrl,
     this.authProvider = 'email',
     this.emailVerified = true,
+    this.isDemo = false,
+    this.walletBalanceEur = 0.0,
     required this.createdAt,
   });
 
   /// Unique user account identifier (matches Firebase Auth UID).
   final String id;
 
-  /// User email address.
+  /// User email address (empty for Anonymous Demo users).
   final String email;
 
   /// Full display name.
@@ -48,8 +50,17 @@ class UserProfile {
   /// Whether the rider's email address has been verified via Firebase Auth.
   final bool emailVerified;
 
+  /// True when signed in automatically via the zero-friction Demo session.
+  final bool isDemo;
+
+  /// Demo or prepaid wallet balance in EUR.
+  final double walletBalanceEur;
+
   /// Account creation timestamp.
   final DateTime createdAt;
+
+  /// True when this profile represents an anonymous/demo guest account.
+  bool get isAnonymousDemo => isDemo || authProvider == 'anonymous';
 
   /// Computes exact calendar age in completed years at [referenceDate].
   int? ageAt(DateTime referenceDate) {
@@ -111,6 +122,8 @@ class UserProfile {
     String? photoUrl,
     String? authProvider,
     bool? emailVerified,
+    bool? isDemo,
+    double? walletBalanceEur,
     DateTime? createdAt,
   }) {
     return UserProfile(
@@ -123,6 +136,8 @@ class UserProfile {
       photoUrl: photoUrl ?? this.photoUrl,
       authProvider: authProvider ?? this.authProvider,
       emailVerified: emailVerified ?? this.emailVerified,
+      isDemo: isDemo ?? this.isDemo,
+      walletBalanceEur: walletBalanceEur ?? this.walletBalanceEur,
       createdAt: createdAt ?? this.createdAt,
     );
   }
@@ -138,6 +153,8 @@ class UserProfile {
         'photoUrl': photoUrl,
         'authProvider': authProvider,
         'emailVerified': emailVerified,
+        'isDemo': isDemo,
+        'walletBalanceEur': walletBalanceEur,
         'createdAt': createdAt.toIso8601String(),
       };
 
@@ -152,16 +169,17 @@ class UserProfile {
         const {'email', 'google', 'anonymous'}.contains(authProvider)
             ? authProvider
             : 'email';
+    final cleanEmail = email.trim().toLowerCase();
     final safeName = name.trim().isEmpty
-        ? email.split('@').first
+        ? (cleanEmail.isNotEmpty ? cleanEmail.split('@').first : 'Demo Potnik')
         : (name.trim().length > 100
             ? name.trim().substring(0, 100)
             : name.trim());
 
     return <String, dynamic>{
-      if (!forUpdate) 'id': id,
-      if (!forUpdate) 'uid': id,
-      'email': email.trim().toLowerCase(),
+      'id': id,
+      'uid': id,
+      'email': cleanEmail,
       'name': safeName,
       'displayName': safeName,
       if (dateOfBirth != null) 'dateOfBirth': dateOfBirth!.toIso8601String(),
@@ -173,7 +191,10 @@ class UserProfile {
           photoUrl!.length <= 512)
         'photoUrl': photoUrl,
       'authProvider': safeProvider,
-      if (!forUpdate) 'createdAt': createdAt.toIso8601String(),
+      'emailVerified': emailVerified,
+      'isDemo': isDemo || safeProvider == 'anonymous',
+      'walletBalanceEur': walletBalanceEur.clamp(0.0, 10000.0),
+      'createdAt': createdAt.toIso8601String(),
       'updatedAt': DateTime.now().toIso8601String(),
     };
   }
@@ -202,16 +223,20 @@ class UserProfile {
       } catch (_) {}
     }
 
+    final provider = json['authProvider'] as String? ?? 'email';
     return UserProfile(
       id: (json['id'] ?? json['uid'] ?? '') as String,
-      email: json['email'] as String,
-      name: (json['name'] ?? json['displayName'] ?? '') as String,
+      email: (json['email'] as String?) ?? '',
+      name: (json['name'] ?? json['displayName'] ?? 'Demo Potnik') as String,
       dateOfBirth: parsedDob,
       preferredLocaleCode: json['preferredLocaleCode'] as String? ?? 'sl',
       guardianConfirmed: json['guardianConfirmed'] as bool? ?? false,
       photoUrl: json['photoUrl'] as String?,
-      authProvider: json['authProvider'] as String? ?? 'email',
-      emailVerified: json['emailVerified'] as bool? ?? true,
+      authProvider: provider,
+      emailVerified: json['emailVerified'] as bool? ?? (provider != 'email'),
+      isDemo: json['isDemo'] as bool? ?? (provider == 'anonymous'),
+      walletBalanceEur:
+          (json['walletBalanceEur'] as num?)?.toDouble() ?? 25.0,
       createdAt: parsedCreatedAt,
     );
   }

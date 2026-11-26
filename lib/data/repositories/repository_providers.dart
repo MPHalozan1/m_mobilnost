@@ -1,5 +1,7 @@
 // Riverpod providers binding mock data repositories and fleet simulators.
 
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:m_mobilnost/core/accessibility/a11y_settings.dart';
 import 'package:m_mobilnost/core/firebase/firebase_bootstrap.dart';
@@ -108,19 +110,37 @@ final tripRepositoryProvider = Provider<TripRepository>((ref) {
   );
 });
 
-/// Provides the active [TicketRepository] implementation.
+//**********************************************
+// Ticket, Payment, Notice & Auth Providers    *
+//**********************************************
+
+Future<void> _restoreOrStartDemoSession(
+  MockAuthRepository authRepo,
+  MockTicketRepository ticketRepo,
+) async {
+  try {
+    final restored = await authRepo.restoreSession();
+    final active = restored ?? await authRepo.signInDemoAccount();
+    if (active.isAnonymousDemo) {
+      await ticketRepo.ensureDemoTicketSeeded(active.id);
+    }
+  } catch (_) {}
+}
+
+// Provides the active [TicketRepository] implementation.
 final ticketRepositoryProvider = Provider<TicketRepository>((ref) {
-  final repo = MockTicketRepository();
+  final firestoreService = ref.watch(firestoreTransitServiceProvider);
+  final repo = MockTicketRepository(firestoreService: firestoreService);
   ref.onDispose(repo.dispose);
   return repo;
 });
 
-/// Provides the active [PaymentRepository] implementation.
+// Provides the active [PaymentRepository] implementation.
 final paymentRepositoryProvider = Provider<PaymentRepository>((ref) {
   return MockPaymentRepository();
 });
 
-/// Provides the active [NoticeRepository] implementation.
+// Provides the active [NoticeRepository] implementation.
 final noticeRepositoryProvider = Provider<NoticeRepository>((ref) {
   final repo = MockNoticeRepository(
     generator: ref.watch(noticeGeneratorProvider),
@@ -134,8 +154,8 @@ final noticeRepositoryProvider = Provider<NoticeRepository>((ref) {
   return repo;
 });
 
-/// Provides the active [AuthRepository] backed by Firebase Auth + Firestore (`m-mobilnost-2`)
-/// when configured, falling back safely to [MockAuthRepository] offline or in widget tests.
+// Provides the active [AuthRepository] backed by Firebase Auth + Firestore (`m-mobilnost-2`)
+// when configured, falling back safely to [MockAuthRepository] offline or in widget tests.
 final authRepositoryProvider = Provider<AuthRepository>((ref) {
   final prefs = ref.watch(sharedPreferencesProvider);
   final tickets = ref.watch(ticketRepositoryProvider);
@@ -150,11 +170,26 @@ final authRepositoryProvider = Provider<AuthRepository>((ref) {
     await ref.read(a11ySettingsProvider.notifier).resetAll();
   }
 
+  Future<void> migrateDemoTickets(String fromUid, String toUid) async {
+    if (tickets is MockTicketRepository) {
+      await tickets.migrateTickets(fromUid, toUid);
+    }
+  }
+
   if (FirebaseBootstrap.isReady && !isFlutterTestEnvironment) {
     final repo = FirebaseAuthRepository(
       firestoreService: firestoreService,
       onDeleteLocalData: clearLocal,
+      onMigrateTickets: migrateDemoTickets,
     );
+    if (tickets is MockTicketRepository) {
+      final sub = repo.watchCurrentUser().listen((user) {
+        if (user != null && user.isAnonymousDemo) {
+          unawaited(tickets.ensureDemoTicketSeeded(user.id));
+        }
+      });
+      ref.onDispose(sub.cancel);
+    }
     ref.onDispose(repo.dispose);
     return repo;
   }
@@ -162,7 +197,11 @@ final authRepositoryProvider = Provider<AuthRepository>((ref) {
   final repo = MockAuthRepository(
     prefs: prefs,
     onDeleteLocalData: clearLocal,
+    onMigrateTickets: migrateDemoTickets,
   );
+  if (!isFlutterTestEnvironment && tickets is MockTicketRepository) {
+    unawaited(_restoreOrStartDemoSession(repo, tickets));
+  }
   ref.onDispose(repo.dispose);
   return repo;
 });

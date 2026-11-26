@@ -22,13 +22,15 @@ import 'package:m_mobilnost/core/widgets/occupancy_strip.dart';
 import 'package:m_mobilnost/core/widgets/simulated_data_badge.dart';
 import 'package:m_mobilnost/core/widgets/state_views.dart';
 import 'package:m_mobilnost/core/widgets/status_chip.dart';
-import 'package:m_mobilnost/features/onboarding/presentation/onboarding_screen.dart';
+import 'package:m_mobilnost/data/repositories/repository_providers.dart';
+import 'package:m_mobilnost/features/map/presentation/go_map_screen.dart';
+import 'package:m_mobilnost/features/onboarding/presentation/welcome_screen.dart';
 import 'package:m_mobilnost/l10n/app_localizations.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  testWidgets('First-launch redirects / to /onboarding when onboardingDone is false',
+  testWidgets('First-launch opens GoMapScreen directly without login wall and /welcome shows hero',
       (WidgetTester tester) async {
     SharedPreferences.setMockInitialValues({});
     final prefs = await SharedPreferences.getInstance();
@@ -37,6 +39,7 @@ void main() {
       overrides: [
         sharedPreferencesProvider.overrideWithValue(prefs),
         isOfflineProvider.overrideWithValue(false),
+        liveBusesStreamProvider.overrideWith((ref) => Stream.value(const [])),
       ],
     );
     addTearDown(container.dispose);
@@ -49,11 +52,15 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.byType(OnboardingScreen), findsOneWidget);
-    expect(find.text('Dobrodošli v M Mobilnost 2.0'), findsWidgets);
+    expect(find.byType(GoMapScreen), findsOneWidget);
+    expect(find.text('M-Mobilnost'), findsOneWidget);
+
+    container.read(routerProvider).go('/welcome');
+    await tester.pumpAndSettle();
+    expect(find.byType(WelcomeScreen), findsOneWidget);
   });
 
-  testWidgets('MMobilnostApp builds cleanly in Slovenian and switches locales',
+  testWidgets('MMobilnostApp builds unified 4-tab shell in Slovenian and switches locales',
       (WidgetTester tester) async {
     SharedPreferences.setMockInitialValues({
       'a11y_onboarding_done': true,
@@ -65,6 +72,7 @@ void main() {
       overrides: [
         sharedPreferencesProvider.overrideWithValue(prefs),
         isOfflineProvider.overrideWithValue(false),
+        liveBusesStreamProvider.overrideWith((ref) => Stream.value(const [])),
       ],
     );
     addTearDown(container.dispose);
@@ -77,21 +85,22 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.text('M Mobilnost'), findsOneWidget);
-    expect(find.text('Domov'), findsWidgets);
+    expect(find.text('M-Mobilnost'), findsOneWidget);
     expect(find.text('Zemljevid'), findsWidgets);
-    expect(find.text('Načrtuj'), findsWidgets);
+    expect(find.text('Avtobusi'), findsWidgets);
     expect(find.text('Vozovnice'), findsWidgets);
+    expect(find.text('Profil'), findsWidgets);
 
     await container.read(a11ySettingsProvider.notifier).setLocaleCode('sr_Latn');
     await tester.pumpAndSettle();
-    expect(find.text('Početna'), findsWidgets);
-    expect(find.text('Planiraj'), findsWidgets);
+    expect(find.text('Karte'), findsWidgets);
 
     await container.read(a11ySettingsProvider.notifier).setLocaleCode('en');
     await tester.pumpAndSettle();
-    expect(find.text('Home'), findsWidgets);
+    expect(find.text('Go / Map'), findsWidgets);
+    expect(find.text('All Buses'), findsWidgets);
     expect(find.text('Tickets'), findsWidgets);
+    expect(find.text('Profile'), findsWidgets);
   });
 
   testWidgets('Extra-large text and High Contrast theme apply cleanly',
@@ -188,6 +197,7 @@ void main() {
       overrides: [
         sharedPreferencesProvider.overrideWithValue(prefs),
         isOfflineProvider.overrideWithValue(false),
+        liveBusesStreamProvider.overrideWith((ref) => Stream.value(const [])),
       ],
     );
     addTearDown(container.dispose);
@@ -200,9 +210,9 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    final settingsIconBtn = find.byIcon(Icons.settings_outlined);
+    final linesIconBtn = find.byIcon(Icons.route_outlined);
     final btnBox = tester.getSize(
-      find.ancestor(of: settingsIconBtn, matching: find.byType(IconButton)),
+      find.ancestor(of: linesIconBtn, matching: find.byType(IconButton)),
     );
     expect(btnBox.width, greaterThanOrEqualTo(56));
     expect(btnBox.height, greaterThanOrEqualTo(56));
@@ -244,6 +254,7 @@ void main() {
       overrides: [
         sharedPreferencesProvider.overrideWithValue(prefs),
         isOfflineProvider.overrideWithValue(false),
+        liveBusesStreamProvider.overrideWith((ref) => Stream.value(const [])),
       ],
     );
     addTearDown(container.dispose);
@@ -271,7 +282,7 @@ void main() {
 
     router.go('/settings');
     await tester.pumpAndSettle();
-    expect(find.text('Settings'), findsOneWidget);
+    expect(find.text('Profile & Settings'), findsOneWidget);
   });
 
   test('Breakpoints, geo interpolation, and formatters behave accurately',

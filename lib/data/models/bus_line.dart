@@ -170,12 +170,12 @@ class BusLine {
     required this.directions,
     this.defaultVehicleClass = MarpromVehicleClass.solo12m,
     int? maxCapacity,
-    bool isLowFloor = true,
+    this.isLowFloor = true,
     this.hasWheelchairRamp = true,
     this.hasWheelchairSpace = true,
     this.hasAudioAnnouncements = true,
     this.isElectricDefault = false,
-  })  : maxCapacity = (maxCapacity ??
+  }) : maxCapacity = (maxCapacity ??
                 (defaultVehicleClass == MarpromVehicleClass.midibus9m
                     ? 64
                     : defaultVehicleClass == MarpromVehicleClass.articulated18m
@@ -188,8 +188,7 @@ class BusLine {
                     ? 64
                     : defaultVehicleClass == MarpromVehicleClass.articulated18m
                         ? 120
-                        : 90)),
-        isLowFloor = isLowFloor;
+                        : 90));
 
   /// Stable line identifier.
   final String id;
@@ -268,8 +267,8 @@ class BusLine {
               'terminalStopId': dir.terminalStopId,
               'stopIds': dir.stopIds,
               if (encodedPolylines != null &&
-                  encodedPolylines['${id}|${dir.id}'] != null)
-                'encodedPolyline': encodedPolylines['${id}|${dir.id}'],
+                  encodedPolylines['$id|${dir.id}'] != null)
+                'encodedPolyline': encodedPolylines['$id|${dir.id}'],
             },
         ],
         'updatedAt': DateTime.now().toUtc().toIso8601String(),

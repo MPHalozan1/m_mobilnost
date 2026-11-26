@@ -10,6 +10,7 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import '../../core/auth/email_validator.dart';
 import '../../core/firebase/firebase_bootstrap.dart';
 import '../../core/firebase/firestore_transit_service.dart';
+import '../../core/maps/google_web_views.dart';
 import '../models/user_profile.dart';
 import '../repositories/auth_repository.dart';
 
@@ -17,37 +18,51 @@ import '../repositories/auth_repository.dart';
 // FirebaseAuthRepository implementation       *
 //**********************************************
 
-/// Production [AuthRepository] backed by Firebase Authentication (server-side scrypt
-/// password hashing — zero plaintext storage) and Cloud Firestore `users/{uid}`.
+// Production [AuthRepository] backed by Firebase Authentication (server-side scrypt
+// password hashing — zero plaintext storage) and Cloud Firestore `users/{uid}`.
 class FirebaseAuthRepository implements AuthRepository {
-  /// Creates a [FirebaseAuthRepository].
+  // Creates a [FirebaseAuthRepository].
   FirebaseAuthRepository({
     required FirestoreTransitService firestoreService,
     Future<void> Function()? onDeleteLocalData,
+    Future<void> Function(String fromUid, String toUid)? onMigrateTickets,
     FirebaseAuth? firebaseAuth,
   })  : _firestore = firestoreService,
+        // ignore: prefer_initializing_formals
         _onDeleteLocalData = onDeleteLocalData,
+        // ignore: prefer_initializing_formals
+        _onMigrateTickets = onMigrateTickets,
         _auth = firebaseAuth ?? FirebaseAuth.instance {
     _controller = StreamController<UserProfile?>.broadcast(
       onListen: () => _controller.add(_currentUser),
     );
     _authSub = _auth.authStateChanges().listen(_handleFirebaseUser);
+    if (!isFlutterTestEnvironment && _auth.currentUser == null) {
+      unawaited(signInDemoAccount());
+    }
   }
 
   final FirebaseAuth _auth;
   final FirestoreTransitService _firestore;
   final Future<void> Function()? _onDeleteLocalData;
+  final Future<void> Function(String fromUid, String toUid)? _onMigrateTickets;
   late final StreamController<UserProfile?> _controller;
   late final StreamSubscription<User?> _authSub;
 
   UserProfile? _currentUser;
+  bool _initialAutoDemoAttempted = false;
 
   Future<void> _handleFirebaseUser(User? fbUser) async {
     if (fbUser == null) {
+      if (!_initialAutoDemoAttempted && !isFlutterTestEnvironment) {
+        await signInDemoAccount();
+        return;
+      }
       _currentUser = null;
       _emit(null);
       return;
     }
+    _initialAutoDemoAttempted = true;
     final synced = await _mergeAndSyncProfile(fbUser);
     _currentUser = synced;
     _emit(synced);
@@ -62,19 +77,27 @@ class FirebaseAuthRepository implements AuthRepository {
     String? overrideProvider,
   }) async {
     final existing = await _firestore.getUserProfile(fbUser.uid);
+    final isAnon = fbUser.isAnonymous || overrideProvider == 'anonymous';
     final providerId = overrideProvider ??
-        (fbUser.providerData.any((p) => p.providerId == 'google.com')
-            ? 'google'
-            : 'email');
+        (isAnon
+            ? 'anonymous'
+            : (fbUser.providerData.any((p) => p.providerId == 'google.com')
+                ? 'google'
+                : 'email'));
     final isGoogle = providerId == 'google';
 
+    final fallbackName = isAnon
+        ? 'Demo Potnik'
+        : (fbUser.email?.split('@').first ?? 'Potnik');
     final profile = UserProfile(
       id: fbUser.uid,
-      email: (fbUser.email ?? existing?.email ?? '').trim().toLowerCase(),
+      email: isAnon
+          ? ''
+          : (fbUser.email ?? existing?.email ?? '').trim().toLowerCase(),
       name: (overrideName ??
               existing?.name ??
               fbUser.displayName ??
-              (fbUser.email?.split('@').first ?? 'Potnik'))
+              fallbackName)
           .trim(),
       dateOfBirth: overrideDob ?? existing?.dateOfBirth,
       preferredLocaleCode:
@@ -83,7 +106,10 @@ class FirebaseAuthRepository implements AuthRepository {
           overrideGuardianConfirmed ?? existing?.guardianConfirmed ?? false,
       photoUrl: fbUser.photoURL ?? existing?.photoUrl,
       authProvider: providerId,
-      emailVerified: isGoogle || fbUser.emailVerified,
+      emailVerified: isAnon ? false : (isGoogle || fbUser.emailVerified),
+      isDemo: isAnon || (existing?.isDemo ?? false),
+      walletBalanceEur:
+          existing?.walletBalanceEur ?? (isAnon ? 25.0 : 0.0),
       createdAt:
           existing?.createdAt ?? fbUser.metadata.creationTime ?? DateTime.now(),
     );
@@ -110,6 +136,8 @@ class FirebaseAuthRepository implements AuthRepository {
         check.errorMessageSl ?? 'Neveljaven e-poštni naslov.',
       );
     }
+    final previousDemoUid =
+        _currentUser?.isAnonymousDemo == true ? _currentUser!.id : null;
     try {
       final cred = await _auth.signInWithEmailAndPassword(
         email: check.normalizedEmail,
@@ -120,6 +148,11 @@ class FirebaseAuthRepository implements AuthRepository {
         throw const AuthException('auth_failed', 'Prijava ni uspela.');
       }
       final profile = await _mergeAndSyncProfile(user, overrideProvider: 'email');
+      if (previousDemoUid != null &&
+          profile.id != previousDemoUid &&
+          _onMigrateTickets != null) {
+        unawaited(_onMigrateTickets(previousDemoUid, profile.id));
+      }
       _currentUser = profile;
       _emit(profile);
       return profile;
@@ -154,6 +187,8 @@ class FirebaseAuthRepository implements AuthRepository {
       );
     }
 
+    final previousDemoUid =
+        _currentUser?.isAnonymousDemo == true ? _currentUser!.id : null;
     try {
       final cred = await _auth.createUserWithEmailAndPassword(
         email: check.normalizedEmail,
@@ -180,6 +215,11 @@ class FirebaseAuthRepository implements AuthRepository {
         overrideGuardianConfirmed: guardianConfirmed,
         overrideProvider: 'email',
       );
+      if (previousDemoUid != null &&
+          profile.id != previousDemoUid &&
+          _onMigrateTickets != null) {
+        unawaited(_onMigrateTickets(previousDemoUid, profile.id));
+      }
       _currentUser = profile;
       _emit(profile);
       return profile;
@@ -200,15 +240,22 @@ class FirebaseAuthRepository implements AuthRepository {
     String? photoUrl,
     String preferredLocaleCode = 'sl',
   }) async {
+    final previousDemoUid =
+        _currentUser?.isAnonymousDemo == true ? _currentUser!.id : null;
     try {
       final identity = await GoogleAuthBridge.authenticate();
       final fbUser = _auth.currentUser;
-      if (fbUser != null) {
+      if (fbUser != null && !fbUser.isAnonymous) {
         final profile = await _mergeAndSyncProfile(
           fbUser,
           overrideLocale: preferredLocaleCode,
           overrideProvider: 'google',
         );
+        if (previousDemoUid != null &&
+            profile.id != previousDemoUid &&
+            _onMigrateTickets != null) {
+          unawaited(_onMigrateTickets(previousDemoUid, profile.id));
+        }
         _currentUser = profile;
         _emit(profile);
         return profile;
@@ -225,6 +272,11 @@ class FirebaseAuthRepository implements AuthRepository {
           createdAt: DateTime.now(),
         );
         await _firestore.upsertUserProfile(profile);
+        if (previousDemoUid != null &&
+            profile.id != previousDemoUid &&
+            _onMigrateTickets != null) {
+          unawaited(_onMigrateTickets(previousDemoUid, profile.id));
+        }
         _currentUser = profile;
         _emit(profile);
         return profile;
@@ -242,7 +294,65 @@ class FirebaseAuthRepository implements AuthRepository {
   }
 
   @override
+  Future<UserProfile> signInDemoAccount({
+    String preferredLocaleCode = 'sl',
+  }) async {
+    _initialAutoDemoAttempted = true;
+    final existing = _currentUser;
+    if (existing != null) return existing;
+
+    final activeFb = _auth.currentUser;
+    if (activeFb != null) {
+      final synced = await _mergeAndSyncProfile(
+        activeFb,
+        overrideLocale: preferredLocaleCode,
+      );
+      _currentUser = synced;
+      _emit(synced);
+      return synced;
+    }
+
+    try {
+      final cred = await _auth.signInAnonymously();
+      final fbUser = cred.user;
+      if (fbUser != null) {
+        final profile = await _mergeAndSyncProfile(
+          fbUser,
+          overrideName: 'Demo Potnik',
+          overrideLocale: preferredLocaleCode,
+          overrideProvider: 'anonymous',
+        );
+        _currentUser = profile;
+        _emit(profile);
+        return profile;
+      }
+    } catch (_) {
+      // Fallback safely to an offline local Demo profile when offline or if
+      // Anonymous Auth is disabled in Firebase Console.
+    }
+
+    final fallbackDemo = UserProfile(
+      id: 'user_demo_marprom',
+      email: '',
+      name: 'Demo Potnik',
+      preferredLocaleCode: preferredLocaleCode,
+      authProvider: 'anonymous',
+      emailVerified: false,
+      isDemo: true,
+      walletBalanceEur: 25.0,
+      createdAt: DateTime.now(),
+    );
+    _currentUser = fallbackDemo;
+    _emit(fallbackDemo);
+    return fallbackDemo;
+  }
+
+  @override
   Future<void> signOut() async {
+    _initialAutoDemoAttempted = true;
+    try {
+      await _auth.signOut();
+    } catch (_) {}
     await GoogleAuthBridge.signOut();
     _currentUser = null;
     _emit(null);

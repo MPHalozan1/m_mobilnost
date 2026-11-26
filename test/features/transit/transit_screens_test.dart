@@ -10,6 +10,7 @@ import 'package:m_mobilnost/core/accessibility/a11y_settings.dart';
 import 'package:m_mobilnost/core/accessibility/favorites_provider.dart';
 import 'package:m_mobilnost/core/maps/google_map_3d_widget.dart';
 import 'package:m_mobilnost/core/network/connectivity_provider.dart';
+import 'package:m_mobilnost/core/widgets/bus_occupancy_cutaway.dart';
 import 'package:m_mobilnost/core/widgets/occupancy_strip.dart';
 import 'package:m_mobilnost/core/widgets/simulated_data_badge.dart';
 import 'package:m_mobilnost/data/models/bus_position.dart';
@@ -343,7 +344,7 @@ void main() {
   });
 
   testWidgets(
-      'LiveTrackerScreen renders early and late review advice cards, Notify me alert, and Next step card',
+      'LiveTrackerScreen displays early and delayed status, P8 occupancy cutaway, and route toggle',
       (WidgetTester tester) async {
     final now = DateTime.now();
     final earlyBus = BusPosition(
@@ -377,26 +378,18 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.text('Next step on your trip'), findsOneWidget);
-    expect(find.text('Get off at the next stop: Tabor'), findsOneWidget);
-    expect(find.text('Bus is running early'), findsOneWidget);
-    expect(
-      find.text(
-        'This bus is 2 min early. It may leave before the timetable time. Be at the stop 4 min sooner.',
-      ),
-      findsOneWidget,
-    );
+    expect(find.text('G6'), findsWidgets);
+    expect(find.textContaining('Tabor'), findsWidgets);
+    expect(find.byType(BusOccupancyCutaway), findsOneWidget);
+    expect(find.text('Hide route'), findsOneWidget);
 
-    // Trigger Notify me 5 min before arrival -> fires visual alert banner immediately since ETA is 2 min.
-    await tester.ensureVisible(find.text('Notify me'));
+    await tester.ensureVisible(find.text('Hide route'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Notify me'));
+    await tester.tap(find.text('Hide route'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Notify 5 min before arrival'));
-    await tester.pumpAndSettle();
-    expect(find.text('Bus G6 is 2 min away from Tabor!'), findsOneWidget);
+    expect(find.text('Show route'), findsOneWidget);
 
-    // Verify late advice card cleanly on a delayed bus.
+    // Verify delayed bus card cleanly displays late chip and cutaway.
     final lateBus = BusPosition(
       vehicleId: 'MB-G1-LATE',
       lineId: 'G1',
@@ -428,7 +421,8 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.text('Bus is delayed'), findsOneWidget);
-    expect(find.textContaining('This bus is 5 min late.'), findsOneWidget);
+    expect(find.text('G1'), findsWidgets);
+    expect(find.byType(BusOccupancyCutaway), findsOneWidget);
+    expect(find.textContaining('Glavni trg'), findsWidgets);
   });
 }

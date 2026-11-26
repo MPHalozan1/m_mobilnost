@@ -7,6 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:m_mobilnost/app/app.dart';
 import 'package:m_mobilnost/core/accessibility/a11y_settings.dart';
+import 'package:m_mobilnost/core/auth/email_validator.dart';
 import 'package:m_mobilnost/core/config/download_links.dart';
 import 'package:m_mobilnost/core/maps/full_screen_transit_map.dart';
 import 'package:m_mobilnost/core/maps/google_maps_config.dart';
@@ -15,13 +16,22 @@ import 'package:m_mobilnost/core/network/google_routes_service.dart';
 import 'package:m_mobilnost/core/network/route_geometry_service.dart';
 import 'package:m_mobilnost/core/widgets/bus_occupancy_cutaway.dart';
 import 'package:m_mobilnost/core/widgets/occupancy_strip.dart';
+import 'package:m_mobilnost/data/mock/mock_ticket_repository.dart';
+import 'package:m_mobilnost/data/models/bus_line.dart';
 import 'package:m_mobilnost/data/repositories/repository_providers.dart';
 import 'package:m_mobilnost/data/seed/seed_lines.dart';
+import 'package:m_mobilnost/data/seed/seed_places.dart';
+import 'package:m_mobilnost/data/seed/seed_stops.dart';
+import 'package:m_mobilnost/data/seed/seed_tickets.dart';
 import 'package:m_mobilnost/data/seed/seed_timetables.dart';
 import 'package:m_mobilnost/data/simulation/bus_simulator.dart';
+import 'package:m_mobilnost/features/account/presentation/profile_settings_screen.dart';
 import 'package:m_mobilnost/features/live_tracker/domain/fleet_statistics_provider.dart';
 import 'package:m_mobilnost/features/map/data/location_service.dart';
+import 'package:m_mobilnost/features/map/presentation/go_map_screen.dart';
 import 'package:m_mobilnost/features/map/presentation/map_screen.dart';
+import 'package:m_mobilnost/features/tickets/nfc/ticket_card_reader.dart';
+import 'package:m_mobilnost/features/trip_planner/presentation/widgets/smart_station_autocomplete.dart';
 import 'package:m_mobilnost/features/web_portal/presentation/marprom_web_scaffold.dart';
 import 'package:m_mobilnost/features/web_portal/presentation/pages/web_download_page.dart';
 import 'package:m_mobilnost/features/web_portal/presentation/pages/web_home_page.dart';
@@ -38,31 +48,19 @@ class _CountingFakeGoogleRoutesService extends GoogleRoutesService {
   int callCount = 0;
 
   @override
-  Future<GoogleRouteResult> computeRouteByCoordinates({
-    required LatLng origin,
-    required LatLng destination,
-    List<LatLng> intermediates = const [],
-    String travelMode = 'DRIVE',
-    bool avoidTolls = false,
-    bool avoidHighways = false,
-    bool includePolyline = true,
+  Future<List<LatLng>> computeBusLineRoadPath({
+    required String lineId,
+    required List<LatLng> orderedStops,
+    BusLine? line,
+    String? cacheKey,
   }) async {
     callCount++;
     await Future<void>.delayed(const Duration(milliseconds: 20));
-    final pts = <LatLng>[
-      origin,
-      const LatLng(46.555, 15.650),
-      const LatLng(46.540, 15.662),
-      destination,
+    return const [
+      LatLng(46.558, 15.646),
+      LatLng(46.555, 15.650),
+      LatLng(46.540, 15.662),
     ];
-    return GoogleRouteResult(
-      distanceMeters: 4200,
-      durationSeconds: 610,
-      rawDuration: '610s',
-      polylinePoints: pts,
-      isLiveApi: true,
-      encodedPolyline: GoogleRoutesService.encodeGooglePolyline(pts),
-    );
   }
 }
 
@@ -200,20 +198,55 @@ void main() {
       expect(sim.snapshotAt(DateTime(2026, 11, 23, 8, 10)), isNotEmpty);
     });
 
-    test('buildOfflineFallback estimates road distance from Maribor coordinates', () {
-      final fallback = GoogleRoutesService.buildOfflineFallback(
-        origin: const LatLng(46.5594, 15.6561),
-        destination: const LatLng(46.5343, 15.6042),
+    test('Slovenian diacritic-insensitive search matches zelez -> Zelezniska postaja', () {
+      expect(normalizeSlovenianSearch('Železniška postaja'), 'zelezniska postaja');
+      final results = filterAndSortStationEntries(
+        rawQuery: 'zelez',
+        stops: seedStops,
+        places: seedPlaces,
+        userPosition: const LatLng(46.5547, 15.6459),
       );
-      expect(fallback.isLiveApi, isFalse);
-      expect(fallback.distanceMeters, greaterThan(4000));
-      expect(fallback.durationSeconds, greaterThan(300));
+      expect(
+        results.any((e) => e.title.toLowerCase().contains('železniška')),
+        isTrue,
+      );
     });
 
-    test('GoogleLineRoutesNotifier serves bundled road geometry without network and slices segments cleanly', () async {
-      // Adapted: line shapes now come from the bundled stop-to-stop road
-      // geometry instead of a Google Routes request with all stops as
-      // waypoints, so no routes call may happen.
+    test('EmailValidator accepts allowlisted domains and rejects junk domains', () {
+      expect(EmailValidator.validate('potnik@gmail.com').isValid, isTrue);
+      expect(EmailValidator.validate('student@student.um.si').isValid, isTrue);
+      expect(EmailValidator.validate('rider@outlook.com').isValid, isTrue);
+      expect(EmailValidator.validate('junk@hjiusdhqi.com').isValid, isFalse);
+    });
+
+    test('PlatformNfcTicketCardReader uses F222222222 AID and emits validatorTapStream', () async {
+      final reader = PlatformNfcTicketCardReader(
+        clock: () => DateTime(2026, 11, 25, 12, 0),
+      );
+      final status = await reader.readCardStatus();
+      expect(status.aidHex, 'F222222222');
+      final emitted = <String>[];
+      final sub = reader.validatorTapStream.listen(emitted.add);
+      addTearDown(sub.cancel);
+      await reader.simulateTapValidation('tkt_demo_1');
+      await Future<void>.delayed(Duration.zero);
+      expect(emitted, ['tkt_demo_1']);
+    });
+
+    test('Signed QR payload encodes valid verifiable Marprom JSON hash', () async {
+      final repo = MockTicketRepository(
+        boxName: 'qr_sig_test_${DateTime.now().microsecondsSinceEpoch}',
+      );
+      addTearDown(repo.dispose);
+      final ticket = await repo.purchaseTicket(
+        type: seedTicketTypesById['single']!,
+        userId: 'user_demo_marprom',
+      );
+      expect(MockTicketRepository.verifySignedQrPayload(ticket.qrPayload), isTrue);
+      expect(MockTicketRepository.verifySignedQrPayload('${ticket.qrPayload}tamper'), isFalse);
+    });
+
+    test('GoogleLineRoutesNotifier deduplicates Google Drive road calls and slices cleanly', () async {
       final fakeService = _CountingFakeGoogleRoutesService();
       final container = ProviderContainer(
         overrides: [googleRoutesServiceProvider.overrideWithValue(fakeService)],
@@ -228,14 +261,11 @@ void main() {
         notifier.ensureLineDirectionLoaded(line, dir, forceInTests: true),
       ]);
 
-      expect(fakeService.callCount, 0);
+      expect(fakeService.callCount, 1);
       expect(results[0], isNotNull);
       expect(results[1], isNotNull);
-      expect(results[0]!.isLiveApi, isFalse);
-      expect(results[0]!.polylinePoints, dir.routePolyline);
-      expect(results[0]!.distanceMeters, greaterThan(0));
-      expect(results[0]!.durationSeconds, greaterThan(0));
-      expect(results[0]!.polylinePoints.length, results[1]!.polylinePoints.length);
+      expect(results[0]!.isLiveApi, isTrue);
+      expect(results[0]!.polylinePoints.length, 3);
 
       const fullRoad = [
         LatLng(46.560, 15.640),
@@ -260,6 +290,27 @@ void main() {
       );
       expect(reverseSlice.first.latitude, closeTo(46.545, 1e-4));
       expect(reverseSlice.last.latitude, closeTo(46.555, 1e-4));
+    });
+
+    testWidgets('GoMapScreen & ProfileSettingsScreen render cleanly at 360x800 mobile width', (tester) async {
+      final container = await _createWebTestContainer();
+      addTearDown(container.dispose);
+      addTearDown(() {
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
+      tester.view.physicalSize = const Size(360, 800);
+      tester.view.devicePixelRatio = 1.0;
+
+      await tester.pumpWidget(_wrapWebPage(container, const GoMapScreen()));
+      await tester.pumpAndSettle();
+      expect(find.byType(GoMapScreen), findsOneWidget);
+      expect(tester.takeException(), isNull);
+
+      await tester.pumpWidget(_wrapWebPage(container, const ProfileSettingsScreen()));
+      await tester.pumpAndSettle();
+      expect(find.byType(ProfileSettingsScreen), findsOneWidget);
+      expect(tester.takeException(), isNull);
     });
   });
 

@@ -5,6 +5,7 @@
     <aid-group
         android:category="other"
         android:description="@string/marprom_hce_aid_desc">
+        <aid-filter android:name="F222222222" />
         <aid-filter android:name="F04D415250524F4D01" />
     </aid-group>
 </host-apdu-service>

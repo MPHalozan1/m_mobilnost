@@ -4,7 +4,6 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:qr_flutter/qr_flutter.dart';
 
 import '../../../core/accessibility/a11y_settings.dart';
 import '../../../core/accessibility/semantics_helpers.dart';
@@ -27,6 +26,7 @@ import '../providers/ticket_providers.dart';
 import 'ticket_checkout_screen.dart';
 import 'ticket_shop_screen.dart';
 import 'ticket_view_screen.dart';
+import 'widgets/contactless_qr_ticket_hero.dart';
 
 /// Displays offline-stored rider tickets across Active, Upcoming, and Expired tabs.
 class TicketsWalletScreen extends ConsumerStatefulWidget {
@@ -164,6 +164,7 @@ class _TicketsWalletScreenState extends ConsumerState<TicketsWalletScreen> {
                               selectedTicketId:
                                   isExpanded ? selectedTicket?.id : null,
                               onBuyTicket: () => _openShop(context),
+                              types: typesAsync.valueOrNull,
                               onSelectTicket: (ticket) {
                                 if (isExpanded) {
                                   setState(
@@ -285,6 +286,7 @@ class _TicketTabList extends StatelessWidget {
     required this.selectedTicketId,
     required this.onBuyTicket,
     required this.onSelectTicket,
+    this.types,
   });
 
   final List<Ticket> tickets;
@@ -294,36 +296,80 @@ class _TicketTabList extends StatelessWidget {
   final String? selectedTicketId;
   final VoidCallback onBuyTicket;
   final ValueChanged<Ticket> onSelectTicket;
+  final List<TicketType>? types;
 
   @override
   Widget build(BuildContext context) {
     final l10n = context.l10n;
+    final isExpanded =
+        LayoutBreakpoints.isExpanded(MediaQuery.sizeOf(context).width);
+    final showHeroCard = !isExpanded &&
+        tickets.isNotEmpty &&
+        tickets.first.statusAt(now) == TicketStatus.active;
+    final showQuickShop = !isExpanded && types != null && types!.isNotEmpty;
+
     if (tickets.isEmpty) {
-      return EmptyStateView(
-        icon: Icons.confirmation_number_outlined,
-        title: emptyText,
-        actionLabel: l10n.ticketsBuyButton,
-        onAction: onBuyTicket,
+      if (!showQuickShop) {
+        return EmptyStateView(
+          icon: Icons.confirmation_number_outlined,
+          title: emptyText,
+          actionLabel: l10n.ticketsBuyButton,
+          onAction: onBuyTicket,
+        );
+      }
+      return ListView(
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 28),
+        children: [
+          QuickDemoTicketShopSection(
+            types: types!,
+            localeCode: localeCode,
+          ),
+          const SizedBox(height: 16),
+          EmptyStateView(
+            icon: Icons.confirmation_number_outlined,
+            title: emptyText,
+            actionLabel: l10n.ticketsBuyButton,
+            onAction: onBuyTicket,
+          ),
+        ],
       );
     }
 
-    return ListView.separated(
+    final remainingTickets = showHeroCard ? tickets.skip(1).toList() : tickets;
+
+    return ListView(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 28),
-      itemCount: tickets.length,
-      separatorBuilder: (_, _) => const SizedBox(height: 16),
-      itemBuilder: (context, index) {
-        final ticket = tickets[index];
-        return FadeSlideIn.staggered(
-          index: index,
-          child: _WalletTicketCard(
-            ticket: ticket,
+      children: [
+        if (showHeroCard) ...[
+          ContactlessQrTicketHero(
+            ticket: tickets.first,
             localeCode: localeCode,
             now: now,
-            selected: selectedTicketId == ticket.id,
-            onTap: () => onSelectTicket(ticket),
+            onOpenFullScreen: () => onSelectTicket(tickets.first),
           ),
-        );
-      },
+          const SizedBox(height: 16),
+        ],
+        if (showQuickShop) ...[
+          QuickDemoTicketShopSection(
+            types: types!,
+            localeCode: localeCode,
+          ),
+          const SizedBox(height: 16),
+        ],
+        for (var i = 0; i < remainingTickets.length; i++) ...[
+          FadeSlideIn.staggered(
+            index: i,
+            child: _WalletTicketCard(
+              ticket: remainingTickets[i],
+              localeCode: localeCode,
+              now: now,
+              selected: selectedTicketId == remainingTickets[i].id,
+              onTap: () => onSelectTicket(remainingTickets[i]),
+            ),
+          ),
+          if (i < remainingTickets.length - 1) const SizedBox(height: 14),
+        ],
+      ],
     );
   }
 }
@@ -476,82 +522,14 @@ class _ExpandedDetailPane extends StatelessWidget {
 
     if (selectedTicket != null) {
       final ticket = selectedTicket!;
-      final status = ticket.statusAt(now);
-      final (chipType, chipLabel) = _statusChipFor(l10n, status);
-      final fromStr =
-          TimeFormatUtils.formatDateTime24(ticket.validFrom, locale: localeCode);
-      final untilStr = TimeFormatUtils.formatDateTime24(
-        ticket.validUntil,
-        locale: localeCode,
-      );
-
       return ListView(
         padding: const EdgeInsets.all(24),
         children: [
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(20),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Wrap(
-                    alignment: WrapAlignment.spaceBetween,
-                    crossAxisAlignment: WrapCrossAlignment.center,
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: [
-                      Text(
-                        ticket.localizedTitle(localeCode),
-                        style: Theme.of(context).textTheme.headlineSmall,
-                      ),
-                      StatusChip(type: chipType, label: chipLabel),
-                    ],
-                  ),
-                  const SizedBox(height: 16),
-                  Center(
-                    child: Container(
-                      padding: const EdgeInsets.all(14),
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(14),
-                        border: Border.all(color: Colors.black26),
-                      ),
-                      child: QrImageView(
-                        data: ticket.qrPayload,
-                        size: 180,
-                        backgroundColor: Colors.white,
-                        semanticsLabel: l10n.a11yQrCode,
-                        eyeStyle: const QrEyeStyle(
-                          eyeShape: QrEyeShape.square,
-                          color: Colors.black,
-                        ),
-                        dataModuleStyle: const QrDataModuleStyle(
-                          dataModuleShape: QrDataModuleShape.square,
-                          color: Colors.black,
-                        ),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  Text(
-                    l10n.ticketsValidFromUntil(fromStr, untilStr),
-                    style: Theme.of(context).textTheme.bodyLarge,
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    l10n.ticketsDriverFallbackCode(ticket.driverFallbackCode),
-                    style: Theme.of(context).textTheme.titleMedium,
-                  ),
-                  const SizedBox(height: 18),
-                  BigButton(
-                    icon: Icons.qr_code_2_rounded,
-                    label: l10n.ticketsViewTitle,
-                    expanded: true,
-                    onPressed: () => onOpenFullTicket(ticket.id),
-                  ),
-                ],
-              ),
-            ),
+          ContactlessQrTicketHero(
+            ticket: ticket,
+            localeCode: localeCode,
+            now: now,
+            onOpenFullScreen: () => onOpenFullTicket(ticket.id),
           ),
         ],
       );

@@ -8,47 +8,57 @@ import 'package:m_mobilnost/core/accessibility/a11y_settings.dart';
 import 'package:m_mobilnost/core/maps/google_web_views.dart';
 import 'package:m_mobilnost/core/network/connectivity_provider.dart';
 import 'package:m_mobilnost/core/network/google_routes_service.dart';
+import 'package:m_mobilnost/core/network/marprom_route_fusion.dart';
 import 'package:m_mobilnost/core/network/route_geometry_service.dart';
 import 'package:m_mobilnost/core/utils/distance.dart';
 import 'package:m_mobilnost/core/utils/geo.dart';
 import 'package:m_mobilnost/data/models/bus_line.dart';
+import 'package:m_mobilnost/data/models/bus_position.dart';
 import 'package:m_mobilnost/data/models/bus_stop.dart';
 import 'package:m_mobilnost/data/models/departure.dart';
 import 'package:m_mobilnost/data/models/trip_plan.dart';
 import 'package:m_mobilnost/data/repositories/line_repository.dart';
 import 'package:m_mobilnost/data/repositories/repository_providers.dart';
 import 'package:m_mobilnost/data/repositories/timetable_repository.dart';
+import 'package:m_mobilnost/data/seed/seed_stops.dart';
 
 import 'route_planner_models.dart';
 
 export 'route_planner_models.dart';
 
 /// Provides the [RoutePlanner] wired to [LineRepository], [TimetableRepository],
-/// and Google Routes API v2 (`TRANSIT`); bus legs follow bundled road geometry.
+/// and Google Routes API v2 (`TRANSIT` + `DRIVE`/`WALK` road geometry).
 final routePlannerProvider = Provider<RoutePlanner>((ref) {
+  final liveFleet =
+      ref.watch(liveBusesStreamProvider).valueOrNull ?? const <BusPosition>[];
   return RoutePlanner(
     lineRepository: ref.watch(lineRepositoryProvider),
     timetableRepository: ref.watch(timetableRepositoryProvider),
     googleRoutesService: ref.watch(googleRoutesServiceProvider),
+    liveFleetProvider: () => liveFleet,
     isSimulatedLiveEnabled: () => ref.read(a11ySettingsProvider).useSimulatedLive,
     isOfflineCheck: () => ref.read(isOfflineProvider),
   );
 });
 
 /// Solves multimodal Maribor bus trips using Google Routes API (`TRANSIT`)
-/// and a round-based RAPTOR fallback supporting 0, 1, and 2 transfers.
+/// with daytime Marprom RAPTOR P-line transfer resolution backed by live
+/// Google Routes `WALK` and `DRIVE` road polylines.
 class RoutePlanner {
   /// Creates a [RoutePlanner] querying [lineRepository] and [timetableRepository].
   RoutePlanner({
     required LineRepository lineRepository,
     required TimetableRepository timetableRepository,
     GoogleRoutesService? googleRoutesService,
+    List<BusPosition> Function()? liveFleetProvider,
     bool Function()? isSimulatedLiveEnabled,
     bool Function()? isOfflineCheck,
     DateTime Function()? clock,
   })  : _lines = lineRepository,
         _timetables = timetableRepository,
+        // ignore: prefer_initializing_formals
         _googleRoutesService = googleRoutesService,
+        _liveFleetProvider = liveFleetProvider ?? (() => const []),
         _isSimulatedLiveEnabled = isSimulatedLiveEnabled ?? (() => true),
         _isOfflineCheck = isOfflineCheck ?? (() => false),
         _clock = clock ?? DateTime.now;
@@ -65,6 +75,7 @@ class RoutePlanner {
   final LineRepository _lines;
   final TimetableRepository _timetables;
   final GoogleRoutesService? _googleRoutesService;
+  final List<BusPosition> Function() _liveFleetProvider;
   final bool Function() _isSimulatedLiveEnabled;
   final bool Function() _isOfflineCheck;
   final DateTime Function() _clock;
@@ -73,7 +84,8 @@ class RoutePlanner {
   DateTime currentTime() => _clock();
 
   /// Finds up to [maxResults] (default 3) ranked [TripOption]s between [origin]
-  /// and [destination] using Google Routes (`TRANSIT`) + multi-transfer RAPTOR search.
+  /// and [destination] using Google Routes v2 (`TRANSIT`) first and resolving
+  /// local daytime Marprom P-lines with real Google `WALK`/`DRIVE` road polylines.
   Future<List<TripOption>> planTrip({
     required LatLng origin,
     required LatLng destination,
@@ -89,6 +101,7 @@ class RoutePlanner {
     bool? useSimulatedLive,
     bool isOffline = false,
     int maxResults = 3,
+    String localeCode = 'sl',
   }) async {
     final anchorTime = targetTime ?? _clock();
     final effectiveLive =
@@ -100,6 +113,66 @@ class RoutePlanner {
 
     final allStops = await _lines.getStops();
     final allLines = await _lines.getLines();
+    final linesById = {for (final line in allLines) line.id: line};
+    final marpromByCode = <String, BusLine>{
+      for (final line in allLines) line.code.toUpperCase(): line,
+      for (final line in allLines) line.id.toUpperCase(): line,
+    };
+    final liveFleet = _liveFleetProvider();
+
+    final routesService = _googleRoutesService;
+    final useLiveGoogleRoutes = routesService != null &&
+        !isOffline &&
+        !_isOfflineCheck() &&
+        !isFlutterTestEnvironment;
+
+    // 1. Primary path: Live Google Routes API v2 TRANSIT (BUS)
+    final googleOptions = <TripOption>[];
+    if (useLiveGoogleRoutes) {
+      final enrichedRoutes = await routesService.computePassengerTransitRoutes(
+        origin: origin,
+        destination: destination,
+        transitPreference: accessibleOnly
+            ? 'LESS_WALKING'
+            : (effectiveFewerTransfers ? 'FEWER_TRANSFERS' : 'LESS_WALKING'),
+        languageCode: localeCode,
+        departureTime: mode == TripTimeMode.arriveBy ? null : anchorTime,
+        arrivalTime: mode == TripTimeMode.arriveBy ? anchorTime : null,
+        marpromLinesByCode: marpromByCode,
+        marpromStops: allStops,
+        liveFleet: liveFleet,
+        originLabel: originLabel,
+        destinationLabel: destinationLabel,
+      );
+
+      for (final item in enrichedRoutes) {
+        googleOptions.add(item.option);
+      }
+
+      if (googleOptions.isNotEmpty) {
+        final filtered = MarpromRouteFusion.filterAccessibleOptions(
+          googleOptions,
+          wheelchairOnly: accessibleOnly,
+          localeCode: localeCode,
+        );
+        if (filtered.isNotEmpty) {
+          return _rankAndSelect(
+            filtered,
+            mode: mode,
+            fewerTransfers: effectiveFewerTransfers,
+            maxResults: maxResults,
+          );
+        }
+      }
+    }
+
+    // 2. Local Marprom schedule search (for daytime P-lines missing from Google GTFS,
+    //    plus headless unit tests). Late night (23:15 - 05:00) on live returns empty.
+    final isLateNight =
+        anchorTime.hour >= 23 && anchorTime.minute >= 15 || anchorTime.hour < 5;
+    if (useLiveGoogleRoutes && isLateNight) {
+      return const [];
+    }
 
     final stopsById = {for (final s in allStops) s.id: s};
     final eligibleStops = allStops
@@ -147,174 +220,133 @@ class RoutePlanner {
         ? await _searchBackward(ctx)
         : await _searchForward(ctx);
 
-    final combinedOptions = List<TripOption>.from(rawOptions);
-    final routesService = _googleRoutesService;
-    if (routesService != null &&
-        !isOffline &&
-        !_isOfflineCheck() &&
-        !isFlutterTestEnvironment) {
-      final marpromByCode = <String, BusLine>{
-        for (final line in allLines) line.code.toUpperCase(): line,
-        for (final line in allLines) line.id.toUpperCase(): line,
-      };
-      final googleTransit = await routesService.computeTransitRoutes(
-        origin: origin,
-        destination: destination,
-        marpromLinesByCode: marpromByCode,
-        marpromStops: allStops,
-        departureTime: mode == TripTimeMode.arriveBy ? null : anchorTime,
-        arrivalTime: mode == TripTimeMode.arriveBy ? anchorTime : null,
-        fewerTransfers: effectiveFewerTransfers,
-        originLabel: originLabel,
-        destinationLabel: destinationLabel,
-      );
-      final linesById = {for (final line in allLines) line.id: line};
-      for (final gOpt in googleTransit) {
-        if (accessibleOnly && !gOpt.isAccessible) continue;
-        combinedOptions.add(_withBusRoadGeometry(gOpt, linesById));
-      }
-    }
-
     final selected = _rankAndSelect(
-      combinedOptions,
+      rawOptions,
       mode: mode,
       fewerTransfers: effectiveFewerTransfers,
       maxResults: maxResults,
     );
 
-    if (routesService == null ||
-        isOffline ||
-        _isOfflineCheck() ||
-        isFlutterTestEnvironment ||
-        selected.isEmpty) {
-      return selected;
-    }
-
-    return _enrichSelectedWalkPolylines(selected, routesService);
-  }
-
-  /// Redraws every bus leg of [opt] that rides a known Marprom line between
-  /// known stops along the bundled bus road geometry; other legs are kept.
-  TripOption _withBusRoadGeometry(
-    TripOption opt,
-    Map<String, BusLine> linesById,
-  ) {
-    var changed = false;
-    final newLegs = <TripLeg>[];
-    for (final leg in opt.legs) {
-      final path = roadPathForBusLeg(leg, linesById: linesById);
-      if (identical(path, leg.polyline)) {
-        newLegs.add(leg);
-        continue;
-      }
-      changed = true;
-      newLegs.add(
-        TripLeg(
-          type: leg.type,
-          fromName: leg.fromName,
-          toName: leg.toName,
-          fromStopId: leg.fromStopId,
-          toStopId: leg.toStopId,
-          startTime: leg.startTime,
-          endTime: leg.endTime,
-          durationMinutes: leg.durationMinutes,
-          distanceMeters: leg.distanceMeters,
-          lineId: leg.lineId,
-          lineCode: leg.lineCode,
-          directionId: leg.directionId,
-          directionName: leg.directionName,
-          stopCount: leg.stopCount,
-          intermediateStopIds: leg.intermediateStopIds,
-          polyline: path,
-          occupancy: leg.occupancy,
-          delaySeconds: leg.delaySeconds,
-          isAccessible: leg.isAccessible,
+    final enrichedFleetOptions = [
+      for (final opt in selected)
+        TripOption(
+          id: opt.id,
+          totalMinutes: opt.totalMinutes,
+          walkMeters: opt.walkMeters,
+          walkMinutes: opt.walkMinutes,
+          transferCount: opt.transferCount,
+          hasTightTransfer: opt.hasTightTransfer,
+          tightTransferMinutes: opt.tightTransferMinutes,
+          legs: [
+            for (final leg in opt.legs)
+              (effectiveLive && leg.type == TripLegType.bus)
+                  ? MarpromRouteFusion.enrichExistingBusLeg(
+                      leg,
+                      linesById: linesById,
+                      liveFleet: liveFleet,
+                    )
+                  : leg,
+          ],
+          freshness: opt.freshness,
+          reliabilityNote: opt.reliabilityNote,
+          isGoogleTransit: opt.isGoogleTransit,
         ),
-      );
+    ];
+
+    if (!useLiveGoogleRoutes || enrichedFleetOptions.isEmpty) {
+      return enrichedFleetOptions;
     }
-    if (!changed) return opt;
-    return TripOption(
-      id: opt.id,
-      totalMinutes: opt.totalMinutes,
-      walkMeters: opt.walkMeters,
-      walkMinutes: opt.walkMinutes,
-      transferCount: opt.transferCount,
-      hasTightTransfer: opt.hasTightTransfer,
-      tightTransferMinutes: opt.tightTransferMinutes,
-      legs: newLegs,
-      freshness: opt.freshness,
-      reliabilityNote: opt.reliabilityNote,
-      isGoogleTransit: opt.isGoogleTransit,
+
+    // Fetch real Google Routes WALK & DRIVE polylines for every leg — zero straight lines
+    return _hydrateGoogleRoadAndWalkPolylines(
+      enrichedFleetOptions,
+      routesService,
+      linesById: linesById,
+      stopsById: stopsById,
     );
   }
 
-  Future<List<TripOption>> _enrichSelectedWalkPolylines(
+  /// Hydrates every WALK and BUS leg in [options] with live Google Routes v2
+  /// road/sidewalk polylines (`travelMode: WALK` and `computeBusLineRoadPath`).
+  Future<List<TripOption>> _hydrateGoogleRoadAndWalkPolylines(
     List<TripOption> options,
-    GoogleRoutesService routesService,
-  ) async {
-    final enriched = <TripOption>[];
+    GoogleRoutesService routesService, {
+    required Map<String, BusLine> linesById,
+    required Map<String, BusStop> stopsById,
+  }) async {
+    const roadOverrides = <String, LatLng>{
+      'europark': LatLng(46.55451, 15.65147),
+    };
+
+    final hydrated = <TripOption>[];
     for (final opt in options) {
-      var changed = false;
       final newLegs = <TripLeg>[];
       for (final leg in opt.legs) {
-        if (leg.type == TripLegType.walk &&
-            leg.polyline.length == 2 &&
-            GeoUtils.haversineMeters(leg.polyline.first, leg.polyline.last) > 35) {
-          final roadWalk = await routesService.computeWalkPolyline(
-            leg.polyline.first,
-            leg.polyline.last,
-          );
-          if (roadWalk.length > 2) {
-            changed = true;
+        if (leg.type == TripLegType.walk && leg.polyline.length >= 2) {
+          final start = leg.polyline.first;
+          final end = leg.polyline.last;
+          if (GeoUtils.haversineMeters(start, end) > 25) {
+            final walkPoly = await routesService.computeWalkPolyline(start, end);
             newLegs.add(
-              TripLeg(
-                type: leg.type,
-                fromName: leg.fromName,
-                toName: leg.toName,
-                fromStopId: leg.fromStopId,
-                toStopId: leg.toStopId,
-                startTime: leg.startTime,
-                endTime: leg.endTime,
-                durationMinutes: leg.durationMinutes,
-                distanceMeters: leg.distanceMeters,
-                lineId: leg.lineId,
-                lineCode: leg.lineCode,
-                directionId: leg.directionId,
-                directionName: leg.directionName,
-                stopCount: leg.stopCount,
-                intermediateStopIds: leg.intermediateStopIds,
-                polyline: roadWalk,
-                occupancy: leg.occupancy,
-                delaySeconds: leg.delaySeconds,
-                isAccessible: leg.isAccessible,
-              ),
+              walkPoly.length >= 2 ? leg.copyWith(polyline: walkPoly) : leg,
             );
             continue;
           }
+          newLegs.add(leg);
+        } else if (leg.type == TripLegType.bus) {
+          final line = linesById[leg.lineId];
+          final dir = line?.directionById(leg.directionId ?? '') ??
+              line?.directions.firstOrNull;
+          if (line != null && dir != null && dir.stopIds.length >= 2) {
+            final ordered = [
+              for (var i = 0; i < dir.stopIds.length; i++)
+                roadOverrides[dir.stopIds[i]] ??
+                    stopsById[dir.stopIds[i]]?.position ??
+                    seedStopsById[dir.stopIds[i]]?.position ??
+                    dir.polyline[i],
+            ];
+            final fullRoad = await routesService.computeBusLineRoadPath(
+              lineId: line.id,
+              orderedStops: ordered,
+              line: line,
+              cacheKey: '${line.id}|${dir.id}',
+            );
+            if (fullRoad.length >= 2) {
+              final boardPos = stopsById[leg.fromStopId]?.position ??
+                  (leg.polyline.isNotEmpty ? leg.polyline.first : fullRoad.first);
+              final alightPos = stopsById[leg.toStopId]?.position ??
+                  (leg.polyline.isNotEmpty ? leg.polyline.last : fullRoad.last);
+              final sliced = slicePolylineBetweenPoints(
+                fullRoad,
+                boardPos,
+                alightPos,
+              );
+              newLegs.add(leg.copyWith(polyline: sliced));
+              continue;
+            }
+          }
+          newLegs.add(leg);
+        } else {
+          newLegs.add(leg);
         }
-        newLegs.add(leg);
       }
-      if (!changed) {
-        enriched.add(opt);
-      } else {
-        enriched.add(
-          TripOption(
-            id: opt.id,
-            totalMinutes: opt.totalMinutes,
-            walkMeters: opt.walkMeters,
-            walkMinutes: opt.walkMinutes,
-            transferCount: opt.transferCount,
-            hasTightTransfer: opt.hasTightTransfer,
-            tightTransferMinutes: opt.tightTransferMinutes,
-            legs: newLegs,
-            freshness: opt.freshness,
-            reliabilityNote: opt.reliabilityNote,
-            isGoogleTransit: opt.isGoogleTransit,
-          ),
-        );
-      }
+      hydrated.add(
+        TripOption(
+          id: opt.id,
+          totalMinutes: opt.totalMinutes,
+          walkMeters: opt.walkMeters,
+          walkMinutes: opt.walkMinutes,
+          transferCount: opt.transferCount,
+          hasTightTransfer: opt.hasTightTransfer,
+          tightTransferMinutes: opt.tightTransferMinutes,
+          legs: newLegs,
+          freshness: opt.freshness,
+          reliabilityNote: opt.reliabilityNote,
+          isGoogleTransit: true,
+        ),
+      );
     }
-    return enriched;
+    return hydrated;
   }
 
   /// Finds nearby walkable stops that can reach [destination] (0 or 1 transfer),

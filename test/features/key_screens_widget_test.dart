@@ -9,7 +9,6 @@ import 'package:m_mobilnost/app/router.dart';
 import 'package:m_mobilnost/core/accessibility/a11y_settings.dart';
 import 'package:m_mobilnost/core/maps/google_map_3d_widget.dart';
 import 'package:m_mobilnost/core/network/connectivity_provider.dart';
-import 'package:m_mobilnost/core/widgets/big_button.dart';
 import 'package:m_mobilnost/core/widgets/occupancy_strip.dart';
 import 'package:m_mobilnost/core/widgets/simulated_data_badge.dart';
 import 'package:m_mobilnost/data/mock/mock_auth_repository.dart';
@@ -113,7 +112,7 @@ void main() {
       });
       tester.view.devicePixelRatio = 1.0;
 
-      // 1. Compact (< 600px): bottom NavigationBar, no NavigationRail.
+      // 1. Compact (< 600px): bottom NavigationBar, no NavigationRail, GoMapScreen at /.
       tester.view.physicalSize = const Size(390, 844);
       await tester.pumpWidget(
         UncontrolledProviderScope(
@@ -125,16 +124,8 @@ void main() {
 
       expect(find.byType(NavigationBar), findsOneWidget);
       expect(find.byType(NavigationRail), findsNothing);
+      expect(find.byType(GoogleMap3DWidget), findsOneWidget);
       expect(tester.takeException(), isNull);
-
-      // Verify >= 56x56 dp touch targets on BigButtons on HomeScreen.
-      final bigButtons = find.byType(BigButton);
-      expect(bigButtons, findsWidgets);
-      for (final element in bigButtons.evaluate()) {
-        final box = element.renderObject as RenderBox;
-        expect(box.size.width, greaterThanOrEqualTo(56));
-        expect(box.size.height, greaterThanOrEqualTo(56));
-      }
 
       // 2. Medium (600..1024px): compact NavigationRail (extended == false).
       tester.view.physicalSize = const Size(768, 1024);
@@ -166,7 +157,7 @@ void main() {
     });
 
     testWidgets(
-        'Map List-View toggle parity works on MapScreen and TripPlannerScreen',
+        'Unified 4-tab routes (/, /plan, /buses, /profile) render cleanly without exceptions',
         (tester) async {
       final container = await _buildAppContainer();
       addTearDown(container.dispose);
@@ -187,26 +178,23 @@ void main() {
 
       final router = container.read(routerProvider);
 
-      // Navigate to /map -> verify GoogleMap3DWidget is visible, then toggle List view.
-      router.go('/map');
-      await tester.pumpAndSettle();
-      expect(find.byType(GoogleMap3DWidget), findsOneWidget);
-
-      await tester.tap(find.text('List'));
-      await tester.pumpAndSettle();
-      expect(find.byType(GoogleMap3DWidget), findsNothing);
-
-      // Navigate to /plan with endpoints -> verify GoogleMap3DWidget preview toggles to List view.
+      // Navigate to /plan with endpoints -> opens unified GoMapScreen with GoogleMap3DWidget.
       router.go('/plan?fromStopId=glavni_trg&toStopId=ukc_maribor');
       await tester.pumpAndSettle();
       expect(find.byType(GoogleMap3DWidget), findsOneWidget);
+      expect(tester.takeException(), isNull);
 
-      final listBtn = find.widgetWithText(BigButton, 'List');
-      await tester.ensureVisible(listBtn);
+      // Navigate to /buses -> opens All Buses live tracker.
+      router.go('/buses');
       await tester.pumpAndSettle();
-      await tester.tap(listBtn);
+      expect(find.byType(GoogleMap3DWidget), findsOneWidget);
+      expect(tester.takeException(), isNull);
+
+      // Navigate to /profile -> opens Profile & Settings.
+      router.go('/profile');
       await tester.pumpAndSettle();
-      expect(find.byType(GoogleMap3DWidget), findsNothing);
+      expect(find.text('Profile & Settings'), findsOneWidget);
+      expect(tester.takeException(), isNull);
     });
 
     testWidgets(

@@ -2,6 +2,10 @@ param(
     [Parameter(Mandatory = $false)]
     [string]$ProjectId = "m-mobilnost-2",
     [Parameter(Mandatory = $false)]
+    [string]$GoogleMapsApiKey = "",
+    [Parameter(Mandatory = $false)]
+    [string]$GeminiApiKey = "",
+    [Parameter(Mandatory = $false)]
     [string]$FirebaseApiKey = "",
     [Parameter(Mandatory = $false)]
     [string]$FirebaseAppId = "",
@@ -29,7 +33,12 @@ if ($forbidden) {
 }
 
 $dartDefines = @()
+if (Test-Path "dart_defines.json") {
+    $dartDefines += "--dart-define-from-file=dart_defines.json"
+}
 if ($ProjectId -ne "") { $dartDefines += "--dart-define=FIREBASE_PROJECT_ID=$ProjectId" }
+if ($GoogleMapsApiKey -ne "") { $dartDefines += "--dart-define=GOOGLE_MAPS_API_KEY=$GoogleMapsApiKey" }
+if ($GeminiApiKey -ne "") { $dartDefines += "--dart-define=GEMINI_API_KEY=$GeminiApiKey" }
 if ($FirebaseApiKey -ne "") { $dartDefines += "--dart-define=FIREBASE_API_KEY=$FirebaseApiKey" }
 if ($FirebaseAppId -ne "") { $dartDefines += "--dart-define=FIREBASE_APP_ID=$FirebaseAppId" }
 if ($FirebaseSenderId -ne "") { $dartDefines += "--dart-define=FIREBASE_MESSAGING_SENDER_ID=$FirebaseSenderId" }
@@ -37,6 +46,12 @@ if ($FirebaseAuthDomain -ne "") { $dartDefines += "--dart-define=FIREBASE_AUTH_D
 
 Write-Host "==> Building Flutter Web bundle into build/web..."
 flutter build web --release @dartDefines
+
+Write-Host "==> Verifying zero forbidden binaries inside build/web..."
+$forbiddenBuild = Get-ChildItem -Path "build/web" -Recurse -Include *.apk, *.exe, *.ipa, *.dll, *.bat -ErrorAction SilentlyContinue
+if ($forbiddenBuild) {
+    throw "Forbidden binaries found in build/web: $($forbiddenBuild.FullName -join ', ')"
+}
 
 Write-Host "==> Deploying Firebase Hosting, Auth & Firestore Rules..."
 npx -y firebase-tools@latest deploy --only hosting,auth,firestore:rules --project $ProjectId

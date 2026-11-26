@@ -11,7 +11,7 @@ rules_version = '2';
 // Collection: bus_lines
 // Document ID: {lineId}
 // Read: Public (get, list)
-// Write: Authenticated seed/sync (create, update); delete denied
+// Write: Authenticated seed/sync/polyline cache (create, update); delete denied
 // Fields:
 //   - code: string (required, 1..20 chars) - Short public line code (e.g. "G1", "6")
 //   - name: string (required, 1..150 chars) - Descriptive route name
@@ -26,6 +26,8 @@ rules_version = '2';
 //   - isLowFloorDefault: bool (optional)
 //   - isMainTrunk: bool (optional)
 //   - directions: list (optional, max 10 items)
+//   - cachedRoadPolyline: map (optional, max 10 direction keys 1..128 chars -> encoded polyline string <= 100000 chars)
+//                         or single bounded string (<= 100000 chars)
 //   - updatedAt: timestamp or ISO string (optional, <= 40 chars)
 //
 // Collection: stations
@@ -82,9 +84,9 @@ rules_version = '2';
 // Read: Owner only (get only; list denied)
 // Write: Owner only (create, update, delete)
 // Fields:
-//   - email: string (required, 3..254 chars, valid email format)
-//   - uid: string (optional, immutable, must equal userId when present)
-//   - id: string (optional, immutable, must equal userId when present)
+//   - email: string (required; "" or valid email when authProvider == 'anonymous', otherwise 3..254 valid email)
+//   - uid: string (optional, immutable once set, must equal userId when present)
+//   - id: string (optional, immutable once set, must equal userId when present)
 //   - name: string (optional, 1..100 chars)
 //   - displayName: string (optional, 1..100 chars)
 //   - dateOfBirth: timestamp, ISO string (<= 40 chars), or null (optional)
@@ -92,9 +94,31 @@ rules_version = '2';
 //   - guardianConfirmed: bool (optional)
 //   - photoUrl: string (https/http URL, <= 512 chars) or null (optional)
 //   - authProvider: string (optional, in ['email', 'google', 'anonymous'])
-//   - createdAt: timestamp or ISO string (optional, immutable, <= 40 chars)
+//   - walletBalanceEur: number (optional, 0..10000)
+//   - isDemo: bool (optional)
+//   - emailVerified: bool (optional)
+//   - createdAt: timestamp or ISO string (optional, immutable once set, <= 40 chars)
 //   - updatedAt: timestamp or ISO string (optional, <= 40 chars)
 // Forbidden fields: password, passwordHash, plainPassword, secret, salt
+//
+// Subcollection: users/{userId}/tickets
+// Document ID: {ticketId}
+// Read: Owner only (get, list)
+// Write: Owner only (create, update, delete)
+// Fields:
+//   - id: string (optional, immutable once set, 1..128 chars, must equal ticketId when present)
+//   - ticketTypeId: string (required, 1..64 chars)
+//   - ticketCode: string (required, 1..32 chars)
+//   - titles: map (required, max 10 locale entries, keys 1..16 chars, values strings <= 200 chars)
+//   - priceEur: number (required, immutable on update, 0..500)
+//   - zone: string (optional, 1..64 chars)
+//   - purchasedAt: timestamp or ISO string (required, immutable on update, <= 40 chars)
+//   - validFrom: timestamp or ISO string (required, immutable on update, <= 40 chars)
+//   - validUntil: timestamp or ISO string (required, immutable on update, <= 40 chars)
+//   - qrPayload: string (required, 1..512 chars)
+//   - driverFallbackCode: string (required, 1..64 chars)
+//   - userId: string (required, immutable on update, 1..128 chars, == userId)
+//   - validatedAt: timestamp, ISO string (<= 40 chars), or null (optional)
 //
 // Collection: saved_routes
 // Document ID: {routeId}
@@ -158,11 +182,11 @@ service cloud.firestore {
              request.resource.data.uid == request.auth.uid;
     }
 
-    // Ensure uid field is not modified on update
+    // Ensure uid field is not modified or deleted on update once present
     function uidNotModified() {
-      return !('uid' in request.resource.data) ||
-             !('uid' in resource.data) ||
-             request.resource.data.uid == resource.data.uid;
+      return !('uid' in resource.data) ||
+             ('uid' in request.resource.data &&
+              request.resource.data.uid == resource.data.uid);
     }
 
     // Validate required fields exist
@@ -196,13 +220,16 @@ service cloud.firestore {
              request.resource.data[field] is bool;
     }
 
+    // Validate timestamp or bounded ISO date string value
+    function isValidTimestampOrDateStr(val) {
+      return val is timestamp ||
+             (val is string && val.size() > 0 && val.size() <= 40);
+    }
+
     // Validate optional timestamp or bounded ISO date string when present
     function isValidOptionalTimestampOrDateStr(field) {
       return !(field in request.resource.data) ||
-             request.resource.data[field] is timestamp ||
-             (request.resource.data[field] is string &&
-              request.resource.data[field].size() > 0 &&
-              request.resource.data[field].size() <= 40);
+             isValidTimestampOrDateStr(request.resource.data[field]);
     }
 
     // Validate URL format (https:// or http://)
@@ -220,12 +247,62 @@ service cloud.firestore {
              email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
     }
 
+    // Validate user email: Anonymous Demo users may use "" or valid email; others require valid email
+    function isValidUserEmail(data) {
+      return (
+        ('authProvider' in data &&
+         data.authProvider == 'anonymous' &&
+         data.email is string &&
+         (data.email == '' || isValidEmail(data.email))) ||
+        ((!('authProvider' in data) || data.authProvider != 'anonymous') &&
+         isValidEmail(data.email))
+      );
+    }
+
     // Validate list type and max length
     function isValidList(list, maxSize) {
       return list is list && list.size() <= maxSize;
     }
 
-    // Validate immutable fields have not changed on update (when present before)
+    // Validate a single entry in a bounded string->string map (short-circuits past map size)
+    function isValidStringMapEntry(mapData, keys, idx, maxKeyLen, maxValLen) {
+      return idx >= keys.size() || (
+        keys[idx] is string &&
+        keys[idx].size() >= 1 &&
+        keys[idx].size() <= maxKeyLen &&
+        mapData[keys[idx]] is string &&
+        mapData[keys[idx]].size() <= maxValLen
+      );
+    }
+
+    // Validate up to 10 key/value string pairs
+    function isValidStringMapEntries10(mapData, keys, maxKeyLen, maxValLen) {
+      return keys.size() <= 10 &&
+             isValidStringMapEntry(mapData, keys, 0, maxKeyLen, maxValLen) &&
+             isValidStringMapEntry(mapData, keys, 1, maxKeyLen, maxValLen) &&
+             isValidStringMapEntry(mapData, keys, 2, maxKeyLen, maxValLen) &&
+             isValidStringMapEntry(mapData, keys, 3, maxKeyLen, maxValLen) &&
+             isValidStringMapEntry(mapData, keys, 4, maxKeyLen, maxValLen) &&
+             isValidStringMapEntry(mapData, keys, 5, maxKeyLen, maxValLen) &&
+             isValidStringMapEntry(mapData, keys, 6, maxKeyLen, maxValLen) &&
+             isValidStringMapEntry(mapData, keys, 7, maxKeyLen, maxValLen) &&
+             isValidStringMapEntry(mapData, keys, 8, maxKeyLen, maxValLen) &&
+             isValidStringMapEntry(mapData, keys, 9, maxKeyLen, maxValLen);
+    }
+
+    // Validate a map of <= 10 bounded string keys to bounded string values
+    function isValidBoundedStringMap10(mapData, maxKeyLen, maxValLen) {
+      return mapData is map &&
+             isValidStringMapEntries10(mapData, mapData.keys(), maxKeyLen, maxValLen);
+    }
+
+    // Validate cached Google Routes road polyline(s): <= 10 direction keys or <= 100000-char string
+    function isValidCachedRoadPolyline(val) {
+      return (val is string && val.size() <= 100000) ||
+             isValidBoundedStringMap10(val, 128, 100000);
+    }
+
+    // Validate immutable fields have not changed on update
     function areImmutableFieldsUnchanged(fields) {
       return !request.resource.data.diff(resource.data).affectedKeys().hasAny(fields);
     }
@@ -258,23 +335,25 @@ service cloud.firestore {
                'color',
                'colorHex',
                'directions',
+               'cachedRoadPolyline',
                'updatedAt'
              ]) &&
              validStringLength('code', 1, 20) &&
              validStringLength('name', 1, 150) &&
              data.maxCapacity is int &&
-             data.maxCapacity > 0 &&
+             data.maxCapacity >= 1 &&
              data.maxCapacity <= 120 &&
              data.isLowFloor is bool &&
              data.hasWheelchairRamp is bool &&
              data.hasWheelchairSpace is bool &&
              data.hasAudioAnnouncements is bool &&
-             (!('id' in data) || (data.id is string && data.id == lineId && data.id.size() <= 64)) &&
+             (!('id' in data) || (data.id is string && data.id == lineId && data.id.size() >= 1 && data.id.size() <= 64)) &&
              isValidOptionalBool('isLowFloorDefault') &&
              isValidOptionalBool('isMainTrunk') &&
              (!('color' in data) || (data.color is int) || (data.color is string && data.color.size() >= 1 && data.color.size() <= 16)) &&
              isValidOptionalString('colorHex', 1, 16) &&
              (!('directions' in data) || isValidList(data.directions, 10)) &&
+             (!('cachedRoadPolyline' in data) || isValidCachedRoadPolyline(data.cachedRoadPolyline)) &&
              isValidOptionalTimestampOrDateStr('updatedAt');
     }
 
@@ -390,21 +469,73 @@ service cloud.firestore {
                'guardianConfirmed',
                'photoUrl',
                'authProvider',
+               'walletBalanceEur',
+               'isDemo',
+               'emailVerified',
                'createdAt',
                'updatedAt'
              ]) &&
-             isValidEmail(data.email) &&
-             (!('uid' in data) || (data.uid is string && data.uid == userId && data.uid.size() <= 128)) &&
-             (!('id' in data) || (data.id is string && data.id == userId && data.id.size() <= 128)) &&
+             isValidUserEmail(data) &&
+             (!('uid' in data) || (data.uid is string && data.uid == userId && data.uid.size() >= 1 && data.uid.size() <= 128)) &&
+             (!('id' in data) || (data.id is string && data.id == userId && data.id.size() >= 1 && data.id.size() <= 128)) &&
              isValidOptionalString('name', 1, 100) &&
              isValidOptionalString('displayName', 1, 100) &&
-             (!('dateOfBirth' in data) || data.dateOfBirth == null || data.dateOfBirth is timestamp || (data.dateOfBirth is string && data.dateOfBirth.size() > 0 && data.dateOfBirth.size() <= 40)) &&
+             (!('dateOfBirth' in data) || data.dateOfBirth == null || isValidTimestampOrDateStr(data.dateOfBirth)) &&
              (!('preferredLocaleCode' in data) || (data.preferredLocaleCode is string && data.preferredLocaleCode in ['sl', 'en', 'de', 'sr', 'sr_Latn'])) &&
              isValidOptionalBool('guardianConfirmed') &&
              (!('photoUrl' in data) || data.photoUrl == null || isValidUrl(data.photoUrl)) &&
              (!('authProvider' in data) || (data.authProvider is string && data.authProvider in ['email', 'google', 'anonymous'])) &&
+             (!('walletBalanceEur' in data) || (data.walletBalanceEur is number && data.walletBalanceEur >= 0 && data.walletBalanceEur <= 10000)) &&
+             isValidOptionalBool('isDemo') &&
+             isValidOptionalBool('emailVerified') &&
              isValidOptionalTimestampOrDateStr('createdAt') &&
              isValidOptionalTimestampOrDateStr('updatedAt');
+    }
+
+    function isValidUserTicket(data, userId, ticketId) {
+      return hasRequiredFields([
+               'ticketTypeId',
+               'ticketCode',
+               'titles',
+               'priceEur',
+               'purchasedAt',
+               'validFrom',
+               'validUntil',
+               'qrPayload',
+               'driverFallbackCode',
+               'userId'
+             ]) &&
+             hasOnlyAllowedFields([
+               'id',
+               'ticketTypeId',
+               'ticketCode',
+               'titles',
+               'priceEur',
+               'zone',
+               'purchasedAt',
+               'validFrom',
+               'validUntil',
+               'qrPayload',
+               'driverFallbackCode',
+               'userId',
+               'validatedAt'
+             ]) &&
+             (!('id' in data) || (data.id is string && data.id == ticketId && data.id.size() >= 1 && data.id.size() <= 128)) &&
+             validStringLength('ticketTypeId', 1, 64) &&
+             validStringLength('ticketCode', 1, 32) &&
+             isValidBoundedStringMap10(data.titles, 16, 200) &&
+             data.priceEur is number &&
+             data.priceEur >= 0 &&
+             data.priceEur <= 500 &&
+             isValidOptionalString('zone', 1, 64) &&
+             isValidTimestampOrDateStr(data.purchasedAt) &&
+             isValidTimestampOrDateStr(data.validFrom) &&
+             isValidTimestampOrDateStr(data.validUntil) &&
+             validStringLength('qrPayload', 1, 512) &&
+             validStringLength('driverFallbackCode', 1, 64) &&
+             validStringLength('userId', 1, 128) &&
+             data.userId == userId &&
+             (!('validatedAt' in data) || data.validatedAt == null || isValidTimestampOrDateStr(data.validatedAt));
     }
 
     function isValidSavedRoute(data, routeId) {
@@ -476,7 +607,7 @@ service cloud.firestore {
     // Collection Rules
     // ===============================================================
 
-    // Public transit lines: public read, authenticated seed/sync with strict validation
+    // Public transit lines: public read, authenticated seed/sync/polyline cache with strict validation
     match /bus_lines/{lineId} {
       allow get, list: if true;
       allow create, update: if isAuthenticated() && isValidBusLine(request.resource.data, lineId);
@@ -500,15 +631,28 @@ service cloud.firestore {
     // User profiles: strict owner-only access, no listing, no passwords or secrets stored
     match /users/{userId} {
       allow get: if isOwner(userId);
+      allow list: if false;
       allow create: if isOwner(userId) &&
                        uidUnchanged() &&
                        isValidUserProfile(request.resource.data, userId);
       allow update: if isOwner(userId) &&
                        uidNotModified() &&
                        isValidUserProfile(request.resource.data, userId) &&
-                       (!('id' in resource.data) || request.resource.data.id == resource.data.id) &&
-                       (!('createdAt' in resource.data) || request.resource.data.createdAt == resource.data.createdAt);
+                       (!('id' in resource.data) || ('id' in request.resource.data && request.resource.data.id == resource.data.id)) &&
+                       (!('createdAt' in resource.data) || ('createdAt' in request.resource.data && request.resource.data.createdAt == resource.data.createdAt));
       allow delete: if isOwner(userId);
+
+      // User digital tickets: strict owner-only access (supports Anonymous Demo, Email, Google users)
+      match /tickets/{ticketId} {
+        allow get, list: if isOwner(userId);
+        allow create: if isOwner(userId) &&
+                         isValidUserTicket(request.resource.data, userId, ticketId);
+        allow update: if isOwner(userId) &&
+                         isValidUserTicket(request.resource.data, userId, ticketId) &&
+                         areImmutableFieldsUnchanged(['userId', 'purchasedAt', 'validFrom', 'validUntil', 'priceEur']) &&
+                         (!('id' in resource.data) || ('id' in request.resource.data && request.resource.data.id == resource.data.id));
+        allow delete: if isOwner(userId);
+      }
     }
 
     // Saved user routes: strict owner-only read/write/delete, immutable userId

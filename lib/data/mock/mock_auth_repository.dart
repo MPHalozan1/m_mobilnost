@@ -12,13 +12,14 @@ import '../models/user_profile.dart';
 import '../repositories/auth_repository.dart';
 import 'local_storage_helper.dart';
 
-/// Offline/test [AuthRepository] enforcing [EmailValidator], zero plaintext
-/// password persistence, demo login, and full GDPR wipe on delete.
+// Offline/test [AuthRepository] enforcing [EmailValidator], zero plaintext
+// password persistence, demo login, and full GDPR wipe on delete.
 class MockAuthRepository implements AuthRepository {
-  /// Creates a [MockAuthRepository] with seeded `demo@marprom.si` credentials.
+  // Creates a [MockAuthRepository] with seeded `demo@marprom.si` credentials.
   MockAuthRepository({
     this._prefs,
     this._onDeleteLocalData,
+    this._onMigrateTickets,
     String boxName = 'm_mobilnost_auth',
     this.requireEmailVerification = false,
   }) : _store = LocalKeyValueStore(boxName) {
@@ -36,6 +37,7 @@ class MockAuthRepository implements AuthRepository {
 
   final SharedPreferences? _prefs;
   final Future<void> Function()? _onDeleteLocalData;
+  final Future<void> Function(String fromUid, String toUid)? _onMigrateTickets;
   final LocalKeyValueStore _store;
 
   /// When true, newly registered email accounts start unverified until verified.
@@ -132,8 +134,15 @@ class MockAuthRepository implements AuthRepository {
       );
     }
 
+    final previousDemoUid =
+        _currentUser?.isAnonymousDemo == true ? _currentUser!.id : null;
     _currentUser = account.profile;
     await _store.write('active_user', _currentUser!.toJson());
+    if (previousDemoUid != null &&
+        _currentUser!.id != previousDemoUid &&
+        _onMigrateTickets != null) {
+      unawaited(_onMigrateTickets(previousDemoUid, _currentUser!.id));
+    }
     _emit(_currentUser);
     return _currentUser!;
   }
@@ -184,6 +193,8 @@ class MockAuthRepository implements AuthRepository {
       createdAt: now,
     );
 
+    final previousDemoUid =
+        _currentUser?.isAnonymousDemo == true ? _currentUser!.id : null;
     _accounts[normalized] = _HashedAccount(digest: digest, profile: profile);
     // Security invariant: never persist plaintext passwords.
     await _store.write('acct_$normalized', {
@@ -192,6 +203,11 @@ class MockAuthRepository implements AuthRepository {
     });
     _currentUser = profile;
     await _store.write('active_user', profile.toJson());
+    if (previousDemoUid != null &&
+        profile.id != previousDemoUid &&
+        _onMigrateTickets != null) {
+      unawaited(_onMigrateTickets(previousDemoUid, profile.id));
+    }
     _emit(profile);
     return profile;
   }
@@ -203,6 +219,8 @@ class MockAuthRepository implements AuthRepository {
     String? photoUrl,
     String preferredLocaleCode = 'sl',
   }) async {
+    final previousDemoUid =
+        _currentUser?.isAnonymousDemo == true ? _currentUser!.id : null;
     final firebaseIdentity = await GoogleAuthBridge.authenticate();
     final resolvedEmail =
         (firebaseIdentity?.email ?? googleEmail ?? 'potnik.maribor@gmail.com')
@@ -234,8 +252,37 @@ class MockAuthRepository implements AuthRepository {
     });
     _currentUser = profile;
     await _store.write('active_user', profile.toJson());
+    if (previousDemoUid != null &&
+        profile.id != previousDemoUid &&
+        _onMigrateTickets != null) {
+      unawaited(_onMigrateTickets(previousDemoUid, profile.id));
+    }
     _emit(profile);
     return profile;
+  }
+
+  @override
+  Future<UserProfile> signInDemoAccount({
+    String preferredLocaleCode = 'sl',
+  }) async {
+    final existing = _currentUser;
+    if (existing != null) return existing;
+
+    final demoProfile = UserProfile(
+      id: 'user_demo_marprom',
+      email: '',
+      name: 'Demo Potnik',
+      preferredLocaleCode: preferredLocaleCode,
+      authProvider: 'anonymous',
+      emailVerified: false,
+      isDemo: true,
+      walletBalanceEur: 25.0,
+      createdAt: DateTime.now(),
+    );
+    _currentUser = demoProfile;
+    await _store.write('active_user', demoProfile.toJson());
+    _emit(demoProfile);
+    return demoProfile;
   }
 
   @override

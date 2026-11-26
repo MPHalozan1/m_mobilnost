@@ -10,6 +10,7 @@ import '../../data/models/bus_line.dart';
 import '../../data/models/bus_position.dart';
 import '../../data/models/bus_stop.dart';
 import '../../data/models/occupancy.dart';
+import '../../data/models/ticket.dart';
 import '../../data/models/user_profile.dart';
 import '../maps/google_web_views.dart';
 import 'firebase_bootstrap.dart';
@@ -214,8 +215,8 @@ class OccupancyReportRecord {
 //**********************************************
 
 /// Connects the shared Flutter Web + Android app to Cloud Firestore (`m-mobilnost-2`,
-/// `(default)` database) for `users`, `bus_lines`, `stations`, `active_buses`,
-/// `saved_routes`, and `occupancy_reports`, failing safely when offline or disabled.
+/// `(default)` database) for `users`, `users/{uid}/tickets`, `bus_lines`, `stations`,
+/// `active_buses`, `saved_routes`, and `occupancy_reports`.
 class FirestoreTransitService {
   /// Creates a [FirestoreTransitService].
   FirestoreTransitService({FirebaseFirestore? firestore})
@@ -276,6 +277,133 @@ class FirestoreTransitService {
     try {
       await db.collection('users').doc(uid).delete();
     } catch (_) {}
+  }
+
+  //**********************************************
+  // User Vozovnica Tickets (users/{uid}/tickets)*
+  //**********************************************
+
+  /// Streams digital tickets owned by [uid] from `users/{uid}/tickets`.
+  Stream<List<Ticket>> watchUserTickets(String uid) {
+    final db = _db;
+    if (db == null || uid.isEmpty) {
+      return Stream<List<Ticket>>.value(const <Ticket>[]);
+    }
+    try {
+      return db
+          .collection('users')
+          .doc(uid)
+          .collection('tickets')
+          .snapshots()
+          .map((snap) {
+        final items = snap.docs
+            .map((d) => Ticket.fromJson({...d.data(), 'id': d.id}))
+            .toList(growable: false);
+        items.sort((a, b) => b.purchasedAt.compareTo(a.purchasedAt));
+        return items;
+      }).handleError((_) => const <Ticket>[]);
+    } catch (_) {
+      return Stream<List<Ticket>>.value(const <Ticket>[]);
+    }
+  }
+
+  /// Reads all digital tickets owned by [uid] once from Firestore.
+  Future<List<Ticket>> getUserTickets(String uid) async {
+    final db = _db;
+    if (db == null || uid.isEmpty) return const <Ticket>[];
+    try {
+      final snap = await db
+          .collection('users')
+          .doc(uid)
+          .collection('tickets')
+          .get();
+      final items = snap.docs
+          .map((d) => Ticket.fromJson({...d.data(), 'id': d.id}))
+          .toList(growable: false);
+      items.sort((a, b) => b.purchasedAt.compareTo(a.purchasedAt));
+      return items;
+    } catch (_) {
+      return const <Ticket>[];
+    }
+  }
+
+  /// Creates or updates a ticket under `users/{uid}/tickets/{ticket.id}`.
+  Future<bool> upsertUserTicket(String uid, Ticket ticket) async {
+    final db = _db;
+    if (db == null || uid.isEmpty) return false;
+    try {
+      final payload = ticket.toJson()..['userId'] = uid;
+      await db
+          .collection('users')
+          .doc(uid)
+          .collection('tickets')
+          .doc(ticket.id)
+          .set(payload, SetOptions(merge: true));
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  //**********************************************
+  // Google Routes Bus Line Polyline Caching     *
+  //**********************************************
+
+  /// Reads cached Google Routes encoded road polyline(s) for [lineId] from
+  /// `bus_lines/{lineId}.cachedRoadPolyline`.
+  Future<Map<String, String>> getCachedLinePolylines(String lineId) async {
+    final db = _db;
+    if (db == null || lineId.isEmpty) return const {};
+    try {
+      final snap = await db.collection('bus_lines').doc(lineId).get();
+      final raw = snap.data()?['cachedRoadPolyline'];
+      if (raw is String && raw.isNotEmpty) {
+        return {lineId: raw};
+      }
+      if (raw is Map) {
+        return {
+          for (final entry in raw.entries)
+            if (entry.value is String && (entry.value as String).isNotEmpty)
+              entry.key.toString(): entry.value as String,
+        };
+      }
+    } catch (_) {}
+    return const {};
+  }
+
+  /// Persists a decoded Google Routes encoded road polyline in Firestore
+  /// (`bus_lines/{lineId}.cachedRoadPolyline.{cacheKey}`) so all clients reuse it.
+  Future<void> saveCachedLinePolyline({
+    required BusLine line,
+    required String cacheKey,
+    required String encodedPolyline,
+  }) async {
+    final db = _db;
+    if (db == null || encodedPolyline.isEmpty) return;
+    try {
+      final docRef = db.collection('bus_lines').doc(line.id);
+      final snap = await docRef.get();
+      if (snap.exists) {
+        final existingRaw = snap.data()?['cachedRoadPolyline'];
+        final mergedMap = <String, String>{
+          if (existingRaw is Map)
+            for (final entry in existingRaw.entries)
+              if (entry.value is String)
+                entry.key.toString(): entry.value as String,
+          cacheKey: encodedPolyline,
+        };
+        await docRef.update({
+          'cachedRoadPolyline': mergedMap,
+          'updatedAt': DateTime.now().toUtc().toIso8601String(),
+        });
+      } else {
+        final data = line.toFirestore();
+        data['cachedRoadPolyline'] = {cacheKey: encodedPolyline};
+        await docRef.set(data);
+      }
+    } catch (_) {
+      // Non-fatal if user is unauthenticated or offline.
+    }
   }
 
   /// Seeds public `bus_lines` and `stations` collections once per session

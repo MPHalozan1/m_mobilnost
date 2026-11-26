@@ -17,6 +17,21 @@ import 'google_maps_config.dart';
 @JS('__marpromSyncGoogleMap')
 external void _marpromSyncGoogleMap(web.Element hostEl, JSString payloadJson);
 
+@JS('__marpromOnMarkerClick')
+external set _marpromOnMarkerClick(JSFunction? fn);
+
+final Map<String, ValueChanged<String>> _webMarkerClickHandlers = {};
+bool _webMarkerCallbackRegistered = false;
+
+void _ensureWebMarkerCallbackRegistered() {
+  if (_webMarkerCallbackRegistered) return;
+  _webMarkerCallbackRegistered = true;
+  _marpromOnMarkerClick = ((JSString viewId, JSString markerId) {
+    final handler = _webMarkerClickHandlers[viewId.toDart];
+    handler?.call(markerId.toDart);
+  }).toJS;
+}
+
 /// Always false on Flutter Web.
 bool get isFlutterTestEnvironment => false;
 
@@ -34,13 +49,15 @@ class GoogleMap3DPlatformView extends StatefulWidget {
     this.tilt = 60,
     this.heading = 18,
     this.range = 1750,
-    this.mobileZoom = 16.2,
+    this.mobileZoom = 17.2,
     this.polylines = const [],
     this.markers = const [],
     this.camera3DActive = false,
     this.stylePreset = GoogleMapStylePreset.dark,
     this.fitBounds = false,
     this.fitSignature = '',
+    this.forceCenter = false,
+    this.onMarkerTap,
   });
 
   /// Camera center in Maribor.
@@ -61,7 +78,7 @@ class GoogleMap3DPlatformView extends StatefulWidget {
   /// Polylines rendered over Maribor roads.
   final List<GoogleMap3DPolylineData> polylines;
 
-  /// Pins for live buses, stops, and transfers.
+  /// Pins for live buses, stops, and user GPS.
   final List<GoogleMap3DMarkerData> markers;
 
   /// True while actively animating/scrubbing along a 3D route.
@@ -76,6 +93,12 @@ class GoogleMap3DPlatformView extends StatefulWidget {
   /// Signature controlling camera re-fit.
   final String fitSignature;
 
+  /// Forces camera center jump when true.
+  final bool forceCenter;
+
+  /// Callback invoked with the tapped marker ID.
+  final ValueChanged<String>? onMarkerTap;
+
   @override
   State<GoogleMap3DPlatformView> createState() =>
       _GoogleMap3DPlatformViewState();
@@ -89,9 +112,13 @@ class _GoogleMap3DPlatformViewState extends State<GoogleMap3DPlatformView> {
   @override
   void initState() {
     super.initState();
+    _ensureWebMarkerCallbackRegistered();
     _viewType = 'marprom-gmap-vector-3d-${++_counter}';
+    if (widget.onMarkerTap != null) {
+      _webMarkerClickHandlers[_viewType] = widget.onMarkerTap!;
+    }
     ui_web.platformViewRegistry.registerViewFactory(_viewType, (int viewId) {
-      final host = _createIsolatedMapHost();
+      final host = _createIsolatedMapHost(_viewType);
       _hostElement = host;
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) _sync();
@@ -103,7 +130,18 @@ class _GoogleMap3DPlatformViewState extends State<GoogleMap3DPlatformView> {
   @override
   void didUpdateWidget(covariant GoogleMap3DPlatformView oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (widget.onMarkerTap != null) {
+      _webMarkerClickHandlers[_viewType] = widget.onMarkerTap!;
+    } else {
+      _webMarkerClickHandlers.remove(_viewType);
+    }
     _sync();
+  }
+
+  @override
+  void dispose() {
+    _webMarkerClickHandlers.remove(_viewType);
+    super.dispose();
   }
 
   void _sync() {
@@ -120,6 +158,7 @@ class _GoogleMap3DPlatformViewState extends State<GoogleMap3DPlatformView> {
       fitBounds: widget.fitBounds && !widget.camera3DActive,
       fitSignature: widget.fitSignature,
       camera3DActive: widget.camera3DActive,
+      forceCenter: widget.forceCenter,
       stylePreset: widget.stylePreset,
     );
   }
@@ -141,7 +180,9 @@ class GoogleRoadMapPlatformView extends StatefulWidget {
     this.markers = const [],
     this.fitBounds = false,
     this.fitSignature = '',
+    this.forceCenter = false,
     this.stylePreset = GoogleMapStylePreset.dark,
+    this.onMarkerTap,
   });
 
   /// Map center coordinate.
@@ -153,7 +194,7 @@ class GoogleRoadMapPlatformView extends StatefulWidget {
   /// Road polylines to render on top of Google Maps roads.
   final List<GoogleMap3DPolylineData> polylines;
 
-  /// Compact bus badges and stop dots.
+  /// Compact bus badges, stop dots, and user GPS marker.
   final List<GoogleMap3DMarkerData> markers;
 
   /// Whether camera should auto-fit all polylines/markers when [fitSignature] changes.
@@ -162,8 +203,14 @@ class GoogleRoadMapPlatformView extends StatefulWidget {
   /// Cache key controlling when [fitBounds] runs again.
   final String fitSignature;
 
+  /// Forces camera center jump when true.
+  final bool forceCenter;
+
   /// Visual style preset (`dark`, `light`, `satellite`).
   final GoogleMapStylePreset stylePreset;
+
+  /// Callback invoked with the tapped marker ID.
+  final ValueChanged<String>? onMarkerTap;
 
   @override
   State<GoogleRoadMapPlatformView> createState() =>
@@ -178,9 +225,13 @@ class _GoogleRoadMapPlatformViewState extends State<GoogleRoadMapPlatformView> {
   @override
   void initState() {
     super.initState();
+    _ensureWebMarkerCallbackRegistered();
     _viewType = 'marprom-google-roadmap-${++_counter}';
+    if (widget.onMarkerTap != null) {
+      _webMarkerClickHandlers[_viewType] = widget.onMarkerTap!;
+    }
     ui_web.platformViewRegistry.registerViewFactory(_viewType, (int viewId) {
-      final host = _createIsolatedMapHost();
+      final host = _createIsolatedMapHost(_viewType);
       _hostElement = host;
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) _syncMap();
@@ -192,7 +243,18 @@ class _GoogleRoadMapPlatformViewState extends State<GoogleRoadMapPlatformView> {
   @override
   void didUpdateWidget(covariant GoogleRoadMapPlatformView oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (widget.onMarkerTap != null) {
+      _webMarkerClickHandlers[_viewType] = widget.onMarkerTap!;
+    } else {
+      _webMarkerClickHandlers.remove(_viewType);
+    }
     _syncMap();
+  }
+
+  @override
+  void dispose() {
+    _webMarkerClickHandlers.remove(_viewType);
+    super.dispose();
   }
 
   void _syncMap() {
@@ -209,6 +271,7 @@ class _GoogleRoadMapPlatformViewState extends State<GoogleRoadMapPlatformView> {
       fitBounds: widget.fitBounds,
       fitSignature: widget.fitSignature,
       camera3DActive: false,
+      forceCenter: widget.forceCenter,
       stylePreset: widget.stylePreset,
     );
   }
@@ -223,16 +286,7 @@ class _GoogleRoadMapPlatformViewState extends State<GoogleRoadMapPlatformView> {
 // Scroll / gesture isolation for map surfaces *
 //**********************************************
 
-/// Creates the DOM host for a Google Maps JS map and stops wheel events that
-/// Google Maps already handled from bubbling up to the Flutter view.
-///
-/// Flutter web listens for `wheel` on its root `<flutter-view>` element in the
-/// bubble phase. Platform views live inside that element, so without this the
-/// same wheel event zooms the map AND is converted into a Flutter
-/// `PointerScrollEvent` that scrolls the surrounding page `ListView`.
-/// Calling `preventDefault` (non-passive listener) also stops the browser
-/// from zooming the page on ctrl+wheel / trackpad pinch over the map.
-web.HTMLDivElement _createIsolatedMapHost() {
+web.HTMLDivElement _createIsolatedMapHost(String viewId) {
   final host = web.document.createElement('div') as web.HTMLDivElement;
   host.style.width = '100%';
   host.style.height = '100%';
@@ -241,6 +295,7 @@ web.HTMLDivElement _createIsolatedMapHost() {
   host.style.setProperty('touch-action', 'none');
   host.style.setProperty('overscroll-behavior', 'contain');
   host.setAttribute('data-marprom-map', '1');
+  host.setAttribute('data-marprom-view-id', viewId);
   final stopWheel = ((web.Event event) {
     event.stopPropagation();
     if (event.cancelable) event.preventDefault();
@@ -250,7 +305,6 @@ web.HTMLDivElement _createIsolatedMapHost() {
     stopWheel,
     web.AddEventListenerOptions(passive: false),
   );
-  // Older Safari pinch gestures.
   host.addEventListener(
     'gesturestart',
     stopWheel,
@@ -264,16 +318,7 @@ web.HTMLDivElement _createIsolatedMapHost() {
   return host;
 }
 
-/// Makes the Flutter side ignore scroll/zoom input aimed at an embedded map.
-///
-/// * Pointer signals (mouse wheel, ctrl+wheel/trackpad pinch scale) over the
-///   map are claimed first via [PointerSignalResolver], so an ancestor
-///   `Scrollable` never scrolls the page.
-/// * An [EagerGestureRecognizer] wins the gesture arena on pointer down, so a
-///   touch drag on the map pans the map instead of dragging the page.
-///
-/// Controls stacked above the map (siblings in a `Stack`) are hit-tested before
-/// the map and keep working normally.
+/// Absorbs pointer scroll and touch drags over the map so surrounding scroll views stay locked.
 class MapGestureIsolator extends StatelessWidget {
   /// Creates a [MapGestureIsolator].
   const MapGestureIsolator({super.key, required this.child});
@@ -316,6 +361,7 @@ void _syncHostWithGoogleJs({
   required bool fitBounds,
   required String fitSignature,
   required bool camera3DActive,
+  required bool forceCenter,
   required GoogleMapStylePreset stylePreset,
 }) {
   String toHex(Color color) {
@@ -329,14 +375,17 @@ void _syncHostWithGoogleJs({
   };
 
   final payload = <String, dynamic>{
+    'apiKey': GoogleMapsConfig.webApiKey,
     'mapId': GoogleMapsConfig.vectorMapId,
     'mapTypeId': mapTypeId,
+    'stylePreset': stylePreset.name,
     'center': {'lat': center.latitude, 'lng': center.longitude},
     'zoom': zoom,
     'tilt': tilt.clamp(0.0, 65.0),
     'heading': heading,
     'fitBounds': fitBounds,
     'fitSignature': fitSignature,
+    'forceCenter': forceCenter,
     if (camera3DActive)
       'camera3D': {
         'active': true,
@@ -361,7 +410,7 @@ void _syncHostWithGoogleJs({
           },
     ],
     'markers': [
-      for (final mk in markers.take(80))
+      for (final mk in markers.take(100))
         {
           'id': mk.id,
           'lat': mk.position.latitude,
@@ -369,8 +418,12 @@ void _syncHostWithGoogleJs({
           'label': mk.label,
           'shortLabel': mk.shortLabel,
           'isBus': mk.isBus,
+          'isUserLocation': mk.isUserLocation,
+          'isSelected': mk.isSelected,
           'isAccessible': mk.isWheelchairAccessible,
+          'headingDegrees': mk.headingDegrees,
           'color': toHex(mk.color),
+          if (mk.statusColor != null) 'statusColor': toHex(mk.statusColor!),
           if (mk.occupancyPercent != null)
             'occupancyPercent': mk.occupancyPercent!.clamp(0, 100),
           if (mk.occupancyColor != null)

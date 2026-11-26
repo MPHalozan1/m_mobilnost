@@ -8,7 +8,7 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart' as gmaps;
-import 'package:latlong2/latlong.dart';
+import 'package:latlong2/latlong.dart' hide Path;
 
 import 'google_map_models.dart';
 import 'google_maps_config.dart';
@@ -25,11 +25,13 @@ class _CompactTransitBitmaps {
   static final Map<String, gmaps.BitmapDescriptor> _cache = {};
 
   static String keyFor(GoogleMap3DMarkerData m) {
+    if (m.isUserLocation) return 'user_gps';
     if (m.isBus) {
       final code = (m.shortLabel ?? m.label.split(' ').first).toUpperCase();
-      return 'bus|$code|${m.color.toARGB32()}|${m.isWheelchairAccessible}';
+      final ring = (m.statusColor ?? Colors.white).toARGB32();
+      return 'bus|$code|${m.color.toARGB32()}|$ring|${m.isWheelchairAccessible}|${m.isSelected}';
     }
-    return 'stop|${m.color.toARGB32()}';
+    return 'stop|${m.color.toARGB32()}|${m.isSelected}';
   }
 
   static gmaps.BitmapDescriptor? cached(GoogleMap3DMarkerData m) =>
@@ -45,22 +47,48 @@ class _CompactTransitBitmaps {
 
     late int width;
     late int height;
-    if (m.isBus) {
-      width = 84;
-      height = 46;
-      const w = 84.0;
-      const h = 46.0;
+    if (m.isUserLocation) {
+      width = 48;
+      height = 48;
+      const center = Offset(24, 24);
+      canvas.drawCircle(
+        center,
+        22,
+        Paint()..color = const Color(0xFF38BDF8).withValues(alpha: 0.25),
+      );
+      canvas.drawCircle(center, 13, Paint()..color = Colors.white);
+      canvas.drawCircle(center, 9.5, Paint()..color = const Color(0xFF0284C7));
+    } else if (m.isBus) {
+      width = 96;
+      height = 60;
+      const w = 96.0;
+      const h = 60.0;
+      // Directional chevron arrow at top center (rotates with Marker.rotation)
+      final arrow = Path()
+        ..moveTo(w / 2, 2)
+        ..lineTo(w / 2 + 9, 14)
+        ..lineTo(w / 2 - 9, 14)
+        ..close();
+      canvas.drawPath(arrow, Paint()..color = m.color);
+      canvas.drawPath(
+        arrow,
+        Paint()
+          ..color = Colors.white
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2.0,
+      );
+
       final rrect = RRect.fromRectAndRadius(
-        const Rect.fromLTWH(2, 2, w - 4, h - 4),
+        const Rect.fromLTWH(4, 15, w - 8, h - 18),
         const Radius.circular(14),
       );
       canvas.drawRRect(rrect, Paint()..color = m.color);
       canvas.drawRRect(
         rrect,
         Paint()
-          ..color = Colors.white
+          ..color = m.statusColor ?? Colors.white
           ..style = PaintingStyle.stroke
-          ..strokeWidth = 4.0,
+          ..strokeWidth = m.isSelected ? 5.5 : 4.0,
       );
       final code = (m.shortLabel ?? m.label.split(' ').first)
           .toUpperCase()
@@ -71,25 +99,26 @@ class _CompactTransitBitmaps {
           text: m.isWheelchairAccessible ? '$displayCode ♿' : displayCode,
           style: const TextStyle(
             color: Colors.white,
-            fontSize: 19,
+            fontSize: 18,
             fontWeight: FontWeight.w800,
           ),
         ),
         textDirection: TextDirection.ltr,
       )..layout();
-      tp.paint(canvas, Offset((w - tp.width) / 2, (h - tp.height) / 2));
+      tp.paint(canvas, Offset((w - tp.width) / 2, 15 + (h - 18 - tp.height) / 2));
     } else {
-      width = 24;
-      height = 24;
-      const center = Offset(12, 12);
-      canvas.drawCircle(center, 9, Paint()..color = Colors.white);
+      width = m.isSelected ? 32 : 24;
+      height = m.isSelected ? 32 : 24;
+      final c = Offset(width / 2, height / 2);
+      final r = m.isSelected ? 12.0 : 9.0;
+      canvas.drawCircle(c, r, Paint()..color = Colors.white);
       canvas.drawCircle(
-        center,
-        9,
+        c,
+        r,
         Paint()
           ..color = m.color
           ..style = PaintingStyle.stroke
-          ..strokeWidth = 4.0,
+          ..strokeWidth = m.isSelected ? 5.0 : 4.0,
       );
     }
 
@@ -121,7 +150,7 @@ Set<gmaps.Polyline> _buildMobilePolylines(
           polylineId: gmaps.PolylineId(line.id),
           color: line.color,
           width: w,
-          zIndex: 3,
+          zIndex: 4,
           patterns: [
             gmaps.PatternItem.dash(18),
             gmaps.PatternItem.gap(12),
@@ -200,13 +229,15 @@ class GoogleMap3DPlatformView extends StatefulWidget {
     this.tilt = 60,
     this.heading = 18,
     this.range = 1750,
-    this.mobileZoom = 16.0,
+    this.mobileZoom = 17.2,
     this.polylines = const [],
     this.markers = const [],
     this.camera3DActive = false,
     this.stylePreset = GoogleMapStylePreset.dark,
     this.fitBounds = false,
     this.fitSignature = '',
+    this.forceCenter = false,
+    this.onMarkerTap,
   });
 
   /// Map camera target coordinate.
@@ -227,7 +258,7 @@ class GoogleMap3DPlatformView extends StatefulWidget {
   /// Polylines drawn over Maribor streets.
   final List<GoogleMap3DPolylineData> polylines;
 
-  /// Live bus and stop markers.
+  /// Live bus, stop, and user GPS markers.
   final List<GoogleMap3DMarkerData> markers;
 
   /// True while actively playing/scrubbing a 3D route flyover.
@@ -241,6 +272,12 @@ class GoogleMap3DPlatformView extends StatefulWidget {
 
   /// Signature guarding camera re-fits.
   final String fitSignature;
+
+  /// Forces camera center jump when true.
+  final bool forceCenter;
+
+  /// Invoked when the user taps a bus/stop marker.
+  final ValueChanged<String>? onMarkerTap;
 
   @override
   State<GoogleMap3DPlatformView> createState() =>
@@ -324,8 +361,11 @@ class _GoogleMap3DPlatformViewState extends State<GoogleMap3DPlatformView> {
           position: gmaps.LatLng(m.position.latitude, m.position.longitude),
           infoWindow: gmaps.InfoWindow(title: m.label),
           anchor: const Offset(0.5, 0.5),
-          zIndexInt: m.isBus ? 25 : 10,
+          rotation: m.isBus ? (m.headingDegrees % 360) : 0.0,
+          flat: m.isBus,
+          zIndexInt: m.isUserLocation ? 40 : (m.isBus ? 25 : 10),
           icon: cachedIcon,
+          onTap: widget.onMarkerTap != null ? () => widget.onMarkerTap!(m.id) : null,
         ),
       );
     }
@@ -342,7 +382,9 @@ class _GoogleMap3DPlatformViewState extends State<GoogleMap3DPlatformView> {
           : gmaps.MapType.normal,
       style: widget.stylePreset == GoogleMapStylePreset.dark
           ? GoogleMapsConfig.darkMapStyleJson
-          : null,
+          : (widget.stylePreset == GoogleMapStylePreset.light
+              ? GoogleMapsConfig.lightMapStyleJson
+              : null),
       buildingsEnabled: true,
       tiltGesturesEnabled: true,
       rotateGesturesEnabled: true,
@@ -371,7 +413,9 @@ class GoogleRoadMapPlatformView extends StatefulWidget {
     this.markers = const [],
     this.fitBounds = false,
     this.fitSignature = '',
+    this.forceCenter = false,
     this.stylePreset = GoogleMapStylePreset.dark,
+    this.onMarkerTap,
   });
 
   /// Map camera target coordinate.
@@ -383,7 +427,7 @@ class GoogleRoadMapPlatformView extends StatefulWidget {
   /// Google Routes polylines rendered over Maribor roads.
   final List<GoogleMap3DPolylineData> polylines;
 
-  /// Compact bus pills and stop markers.
+  /// Compact bus pills, stop markers, and user GPS marker.
   final List<GoogleMap3DMarkerData> markers;
 
   /// Automatically frames all [polylines] and [markers] when true.
@@ -392,8 +436,14 @@ class GoogleRoadMapPlatformView extends StatefulWidget {
   /// Cache key controlling when bounds re-fit happens.
   final String fitSignature;
 
+  /// Forces camera center jump when true.
+  final bool forceCenter;
+
   /// Map style (`dark`, `light`, `satellite`).
   final GoogleMapStylePreset stylePreset;
+
+  /// Invoked when the user taps a marker.
+  final ValueChanged<String>? onMarkerTap;
 
   @override
   State<GoogleRoadMapPlatformView> createState() =>
@@ -418,7 +468,7 @@ class _GoogleRoadMapPlatformViewState extends State<GoogleRoadMapPlatformView> {
     }
     if (widget.fitBounds && _lastFitSig != widget.fitSignature) {
       _fitIfReady();
-    } else if (!widget.fitBounds &&
+    } else if ((widget.forceCenter || !widget.fitBounds) &&
         (oldWidget.center != widget.center || oldWidget.zoom != widget.zoom)) {
       _controller?.animateCamera(
         gmaps.CameraUpdate.newCameraPosition(
@@ -482,8 +532,11 @@ class _GoogleRoadMapPlatformViewState extends State<GoogleRoadMapPlatformView> {
           position: gmaps.LatLng(m.position.latitude, m.position.longitude),
           infoWindow: gmaps.InfoWindow(title: m.label),
           anchor: const Offset(0.5, 0.5),
-          zIndexInt: m.isBus ? 25 : 10,
+          rotation: m.isBus ? (m.headingDegrees % 360) : 0.0,
+          flat: m.isBus,
+          zIndexInt: m.isUserLocation ? 40 : (m.isBus ? 25 : 10),
           icon: cachedIcon,
+          onTap: widget.onMarkerTap != null ? () => widget.onMarkerTap!(m.id) : null,
         ),
       );
     }
@@ -498,7 +551,9 @@ class _GoogleRoadMapPlatformViewState extends State<GoogleRoadMapPlatformView> {
           : gmaps.MapType.normal,
       style: widget.stylePreset == GoogleMapStylePreset.dark
           ? GoogleMapsConfig.darkMapStyleJson
-          : null,
+          : (widget.stylePreset == GoogleMapStylePreset.light
+              ? GoogleMapsConfig.lightMapStyleJson
+              : null),
       buildingsEnabled: true,
       tiltGesturesEnabled: true,
       rotateGesturesEnabled: true,

@@ -30,13 +30,6 @@ class _LinesScreenState extends ConsumerState<LinesScreen> {
   final TextEditingController _searchController = TextEditingController();
   String _query = '';
   bool _favoritesOnly = false;
-  bool _accessibleOnly = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _accessibleOnly = ref.read(a11ySettingsProvider).wheelchairAccessibleOnly;
-  }
 
   @override
   void dispose() {
@@ -44,13 +37,17 @@ class _LinesScreenState extends ConsumerState<LinesScreen> {
     super.dispose();
   }
 
-  List<BusLine> _filterLines(List<BusLine> lines, Set<String> favoriteIds) {
+  List<BusLine> _filterLines(
+    List<BusLine> lines,
+    Set<String> favoriteIds,
+    bool accessibleOnly,
+  ) {
     final trimmed = _query.trim().toLowerCase();
     return lines.where((line) {
       if (_favoritesOnly && !favoriteIds.contains(line.id)) {
         return false;
       }
-      if (_accessibleOnly && !line.isWheelchairAccessible) {
+      if (accessibleOnly && !line.isWheelchairAccessible) {
         return false;
       }
       if (trimmed.isEmpty) return true;
@@ -67,6 +64,9 @@ class _LinesScreenState extends ConsumerState<LinesScreen> {
     final l10n = context.l10n;
     final linesAsync = ref.watch(allLinesProvider);
     final favorites = ref.watch(favoritesProvider);
+    final accessibleOnly = ref.watch(
+      a11ySettingsProvider.select((s) => s.wheelchairAccessibleOnly),
+    );
     final hapticEnabled = ref.watch(
       a11ySettingsProvider.select((s) => s.hapticAlertsEnabled),
     );
@@ -85,7 +85,8 @@ class _LinesScreenState extends ConsumerState<LinesScreen> {
                 onRetry: () => ref.invalidate(allLinesProvider),
               ),
               data: (lines) {
-                final filtered = _filterLines(lines, favorites.lineIds);
+                final filtered =
+                    _filterLines(lines, favorites.lineIds, accessibleOnly);
                 return ListView(
                   children: [
                     ResponsiveContentContainer(
@@ -142,10 +143,12 @@ class _LinesScreenState extends ConsumerState<LinesScreen> {
                               _FilterTabButton(
                                 label: l10n.linesLowFloor,
                                 icon: Icons.accessible_rounded,
-                                selected: _accessibleOnly,
-                                onTap: () => setState(
-                                  () => _accessibleOnly = !_accessibleOnly,
-                                ),
+                                selected: accessibleOnly,
+                                onTap: () => ref
+                                    .read(a11ySettingsProvider.notifier)
+                                    .setWheelchairAccessibleOnly(
+                                      !accessibleOnly,
+                                    ),
                               ),
                             ],
                           ),
@@ -156,18 +159,20 @@ class _LinesScreenState extends ConsumerState<LinesScreen> {
                               title: l10n.commonEmpty,
                               actionLabel: _query.isNotEmpty ||
                                       _favoritesOnly ||
-                                      _accessibleOnly
+                                      accessibleOnly
                                   ? l10n.commonClear
                                   : null,
                               onAction: _query.isNotEmpty ||
                                       _favoritesOnly ||
-                                      _accessibleOnly
+                                      accessibleOnly
                                   ? () {
                                       _searchController.clear();
+                                      ref
+                                          .read(a11ySettingsProvider.notifier)
+                                          .setWheelchairAccessibleOnly(false);
                                       setState(() {
                                         _query = '';
                                         _favoritesOnly = false;
-                                        _accessibleOnly = false;
                                       });
                                     }
                                   : null,

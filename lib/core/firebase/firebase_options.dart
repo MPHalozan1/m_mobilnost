@@ -6,6 +6,8 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/foundation.dart'
     show TargetPlatform, defaultTargetPlatform, kIsWeb;
 
+import '../config/api_keys_config.dart';
+
 /// Provides live Firebase credentials for project `m-mobilnost-2` across Web
 /// and Android, with optional `--dart-define` overrides.
 abstract final class FirebaseEnvOptions {
@@ -16,10 +18,7 @@ abstract final class FirebaseEnvOptions {
   );
 
   /// Firebase Web API key (`m-mobilnost-2`).
-  static const String webApiKey = String.fromEnvironment(
-    'FIREBASE_API_KEY',
-    defaultValue: 'AIzaSyA2kSTlNOabv2ZbUDvwAN-UVqkTTQUsQtw',
-  );
+  static String get webApiKey => ApiKeysConfig.firebaseWebApiKey;
 
   /// Firebase Web App ID (`m-mobilnost-2`).
   static const String webAppId = String.fromEnvironment(
@@ -28,10 +27,7 @@ abstract final class FirebaseEnvOptions {
   );
 
   /// Firebase Android API key (`m-mobilnost-2`).
-  static const String androidApiKey = String.fromEnvironment(
-    'FIREBASE_ANDROID_API_KEY',
-    defaultValue: 'AIzaSyAJNG4TFmCAskZhgjMwQEeK2dnolsANH7g',
-  );
+  static String get androidApiKey => ApiKeysConfig.firebaseAndroidApiKey;
 
   /// Firebase Android App ID (`m-mobilnost-2`).
   static const String androidAppId = String.fromEnvironment(
@@ -74,7 +70,7 @@ abstract final class FirebaseEnvOptions {
   /// Returns platform [FirebaseOptions] for `m-mobilnost-2`.
   static FirebaseOptions get currentPlatform {
     if (kIsWeb) {
-      return const FirebaseOptions(
+      return FirebaseOptions(
         apiKey: webApiKey,
         appId: webAppId,
         messagingSenderId: messagingSenderId,
@@ -88,7 +84,7 @@ abstract final class FirebaseEnvOptions {
     switch (defaultTargetPlatform) {
       case TargetPlatform.iOS:
       case TargetPlatform.macOS:
-        return const FirebaseOptions(
+        return FirebaseOptions(
           apiKey: androidApiKey,
           appId: androidAppId,
           messagingSenderId: messagingSenderId,
@@ -97,7 +93,7 @@ abstract final class FirebaseEnvOptions {
           iosBundleId: 'si.marprom.mMobilnost',
         );
       default:
-        return const FirebaseOptions(
+        return FirebaseOptions(
           apiKey: androidApiKey,
           appId: androidAppId,
           messagingSenderId: messagingSenderId,
