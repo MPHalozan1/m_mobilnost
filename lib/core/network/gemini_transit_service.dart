@@ -11,12 +11,18 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
 
+import '../../data/models/bus_stop.dart';
+import '../../data/models/place.dart';
 import '../../data/models/trip_plan.dart';
 import '../../data/seed/seed_places.dart';
 import '../../data/seed/seed_stops.dart';
 import '../../features/trip_planner/domain/route_planner.dart';
 import '../config/api_keys_config.dart';
+import '../maps/google_maps_config.dart';
+import '../maps/google_web_views.dart' show isFlutterTestEnvironment;
+import '../utils/geo.dart';
 import 'marprom_route_fusion.dart';
+import 'web_directions_bridge.dart';
 
 //**********************************************
 // GeminiResolvedTrip & AiTransitSearchResult  *
@@ -62,6 +68,47 @@ class GeminiResolvedTrip {
   final String? resolvedByModel;
 }
 
+/// Disambiguated destination branch returned when a query matches multiple
+/// locations in Maribor (e.g. `"mc"`, `"mekdonalds"`, `"hofer"`, `"lidl"`).
+@immutable
+class GeminiPlaceCandidate {
+  /// Creates a [GeminiPlaceCandidate].
+  const GeminiPlaceCandidate({
+    required this.placeId,
+    required this.name,
+    required this.address,
+    required this.position,
+    required this.distanceMeters,
+    this.nearestStopName,
+    this.nearestStopId,
+    this.lineIds = const [],
+  });
+
+  /// Unique place identifier.
+  final String placeId;
+
+  /// Human-readable branch name (e.g. `McDonald's Europark`).
+  final String name;
+
+  /// Street address in Maribor.
+  final String address;
+
+  /// Geographic coordinate of this branch.
+  final LatLng position;
+
+  /// Straight-line distance in meters from the user's current/origin position.
+  final double distanceMeters;
+
+  /// Closest Marprom bus stop name serving this branch.
+  final String? nearestStopName;
+
+  /// Closest Marprom bus stop ID serving this branch.
+  final String? nearestStopId;
+
+  /// Bus line codes serving the closest stop (e.g. `['G1', 'G2', 'G6']`).
+  final List<String> lineIds;
+}
+
 /// Combined outcome of Gemini intent resolution + Google Routes execution.
 @immutable
 class AiTransitSearchResult {
@@ -69,6 +116,7 @@ class AiTransitSearchResult {
   const AiTransitSearchResult({
     required this.resolvedTrip,
     required this.routes,
+    this.candidates = const [],
     this.errorMessage,
     this.debugDetails,
   });
@@ -78,6 +126,12 @@ class AiTransitSearchResult {
 
   /// Computed Google Routes + Marprom enriched trip options.
   final List<TripOption> routes;
+
+  /// Multiple matching Maribor places when user input is ambiguous (e.g. `"mc"`).
+  final List<GeminiPlaceCandidate> candidates;
+
+  /// True when the user should pick among multiple matching branches first.
+  bool get needsDisambiguation => candidates.length > 1 && routes.isEmpty;
 
   /// Friendly error banner if Google Routes failed or returned zero night routes.
   final String? errorMessage;
@@ -130,8 +184,9 @@ class GeminiTransitService {
   // Combined Gemini Intent + Google Routes Call *
   //**********************************************
 
-  /// Resolves [userQuery] using the Gemini free-tier failover chain, then runs
-  /// [RoutePlanner.planTrip] and keeps AI vs Routes error banners clearly separated.
+  /// Resolves [userQuery] using multi-branch place matching + Gemini failover,
+  /// then runs [RoutePlanner.planTrip] (or returns selectable [candidates] when
+  /// more than one Maribor place matches, such as `"mc"` / `"mekdonalds"`).
   Future<AiTransitSearchResult> resolveAndPlan({
     required String userQuery,
     required RoutePlanner planner,
@@ -139,6 +194,58 @@ class GeminiTransitService {
     bool profileWheelchairOnly = false,
     String localeCode = 'sl',
   }) async {
+    final mobilityHint = _mentionsMobilityImpairment(userQuery);
+    final effectiveWheelchair = profileWheelchairOnly || mobilityHint;
+    final defaultOrigin = userLatLng ?? const LatLng(46.5547, 15.6459);
+
+    final (originName, originPos, destQuery) = _extractOriginAndDestQuery(
+      userQuery: userQuery,
+      fallbackOrigin: defaultOrigin,
+      localeCode: localeCode,
+    );
+
+    final candidates = await findMatchingPlaceCandidates(
+      query: destQuery.isEmpty ? userQuery : destQuery,
+      userLatLng: originPos,
+      wheelchairOnly: effectiveWheelchair,
+    );
+
+    if (candidates.length > 1) {
+      final isSl = localeCode == 'sl';
+      final cleanTerm = (destQuery.isEmpty ? userQuery : destQuery).trim();
+      final reply = isSl
+          ? 'Našel sem ${candidates.length} lokacij za "$cleanTerm". Izberite želeno spodaj ali na zemljevidu.'
+          : 'Found ${candidates.length} locations for "$cleanTerm". Pick one below or on the map.';
+      return AiTransitSearchResult(
+        resolvedTrip: GeminiResolvedTrip(
+          originName: originName,
+          originPosition: originPos,
+          destinationName: candidates.first.name,
+          destinationPosition: candidates.first.position,
+          wheelchairOnly: effectiveWheelchair,
+          routingPreference:
+              effectiveWheelchair ? 'LESS_WALKING' : 'FEWER_TRANSFERS',
+          shortReply: reply,
+          resolvedByModel: 'multi-branch-selector',
+        ),
+        routes: const [],
+        candidates: candidates,
+      );
+    }
+
+    if (candidates.length == 1) {
+      return planToCandidate(
+        originName: originName,
+        originPosition: originPos,
+        candidate: candidates.first,
+        planner: planner,
+        wheelchairOnly: effectiveWheelchair,
+        routingPreference:
+            effectiveWheelchair ? 'LESS_WALKING' : 'FEWER_TRANSFERS',
+        localeCode: localeCode,
+      );
+    }
+
     final resolved = await resolveQuery(
       userQuery: userQuery,
       userLatLng: userLatLng,
@@ -146,6 +253,49 @@ class GeminiTransitService {
       localeCode: localeCode,
     );
 
+    return planToDestination(
+      resolved: resolved,
+      planner: planner,
+      localeCode: localeCode,
+    );
+  }
+
+  /// Plans Marprom bus routes to a specific chosen [candidate] branch.
+  Future<AiTransitSearchResult> planToCandidate({
+    required String originName,
+    required LatLng originPosition,
+    required GeminiPlaceCandidate candidate,
+    required RoutePlanner planner,
+    bool wheelchairOnly = false,
+    String routingPreference = 'FEWER_TRANSFERS',
+    String localeCode = 'sl',
+  }) {
+    final isSl = localeCode == 'sl';
+    final resolved = GeminiResolvedTrip(
+      originName: originName,
+      originPosition: originPosition,
+      destinationName: candidate.name,
+      destinationPosition: candidate.position,
+      wheelchairOnly: wheelchairOnly,
+      routingPreference: wheelchairOnly ? 'LESS_WALKING' : routingPreference,
+      shortReply: isSl
+          ? 'Računam pot do ${candidate.name} (najbližja postaja ${candidate.nearestStopName ?? ''}).'
+          : 'Routing to ${candidate.name} (nearest stop ${candidate.nearestStopName ?? ''}).',
+      resolvedByModel: 'selected-place-candidate',
+    );
+    return planToDestination(
+      resolved: resolved,
+      planner: planner,
+      localeCode: localeCode,
+    );
+  }
+
+  /// Executes [RoutePlanner.planTrip] for an already-resolved trip intent.
+  Future<AiTransitSearchResult> planToDestination({
+    required GeminiResolvedTrip resolved,
+    required RoutePlanner planner,
+    String localeCode = 'sl',
+  }) async {
     try {
       final routes = await planner.planTrip(
         origin: resolved.originPosition,
@@ -517,27 +667,21 @@ User query: "$userQuery"
   }
 
   //**********************************************
-  // Final Safety Net: Local Maribor Matcher     *
+  // Multi-Branch Place Search & Local Matcher   *
   //**********************************************
 
-  static GeminiResolvedTrip? _tryLocalMariborMatch({
+  /// Extracts `(originName, originPosition, strippedDestinationQuery)`.
+  static (String, LatLng, String) _extractOriginAndDestQuery({
     required String userQuery,
-    required LatLng? userLocation,
-    required bool defaultWheelchairOnly,
+    required LatLng fallbackOrigin,
     required String localeCode,
   }) {
     final clean = _foldDiacritics(userQuery).trim();
-    if (clean.isEmpty) return null;
-
-    final wheelchairOnly =
-        defaultWheelchairOnly || _mentionsMobilityImpairment(userQuery);
-    final fallbackOrigin = userLocation ?? const LatLng(46.5547, 15.6459);
-
     String originName =
         localeCode == 'sl' ? 'Moja lokacija' : 'My Current Location';
     LatLng originPos = fallbackOrigin;
-
     String destQuery = clean;
+
     final fromToMatch = RegExp(
       r'(?:od|from)\s+(.+?)\s+(?:do|to|na|v)\s+(.+)$',
       caseSensitive: false,
@@ -554,7 +698,7 @@ User query: "$userQuery"
       destQuery = clean
           .replaceAll(
             RegExp(
-              r'\b(pelji me|peljite me|odpelji me|take me|najblizji|najbližji|nizkopodni|avtobus|bus|pot|route|do|na|v|to|in|prosim|please|invalid|vozicek)\b',
+              r'\b(pelji me|peljite me|odpelji me|kako pridem|kako priti|take me|how do i get|route me|najblizji|najblizja|najblizje|nearest|closest|nizkopodni|avtobus|bus|pot|route|do|na|v|u|to|in|prosim|please|invalid|vozicek)\b',
               caseSensitive: false,
             ),
             ' ',
@@ -563,6 +707,349 @@ User query: "$userQuery"
           .trim();
       if (destQuery.isEmpty) destQuery = clean;
     }
+
+    return (originName, originPos, destQuery);
+  }
+
+  /// Finds matching Maribor locations across curated multi-branch places and
+  /// (when live on Web/network) Google Places, returning >1 items when ambiguous.
+  Future<List<GeminiPlaceCandidate>> findMatchingPlaceCandidates({
+    required String query,
+    required LatLng userLatLng,
+    bool wheelchairOnly = false,
+  }) async {
+    final clean = _foldDiacritics(query).trim();
+    if (clean.isEmpty) return const [];
+
+    // 1. Check multi-branch chains & curated places in Maribor.
+    final curated = _matchCuratedCandidates(
+      cleanQuery: clean,
+      userLatLng: userLatLng,
+      wheelchairOnly: wheelchairOnly,
+    );
+    if (curated.isNotEmpty) {
+      return curated;
+    }
+
+    // 2. If user searched something not in our 16 seeded landmarks or curated
+    // multi-branch chains (e.g. "dm", "kavarna", "posta", "banka"), query
+    // Google Places JS (Web) or Places v1 Text Search (native) bounded to Maribor.
+    if (!isFlutterTestEnvironment) {
+      final livePlaces = await _searchGooglePlacesInMaribor(
+        query: query,
+        userLatLng: userLatLng,
+        wheelchairOnly: wheelchairOnly,
+      );
+      if (livePlaces.length > 1) {
+        return livePlaces;
+      }
+    }
+
+    return const [];
+  }
+
+  static List<GeminiPlaceCandidate> _matchCuratedCandidates({
+    required String cleanQuery,
+    required LatLng userLatLng,
+    required bool wheelchairOnly,
+  }) {
+    final tokens = cleanQuery
+        .split(RegExp(r'[\s,\-]+'))
+        .where((t) => t.isNotEmpty)
+        .toList();
+    if (tokens.isEmpty) return const [];
+
+    // Common Slovenian declensions / slang aliases mapped to canonical brandGroup.
+    const brandKeywordGroups = <String, String>{
+      'mc': 'mcdonalds',
+      'mcka': 'mcdonalds',
+      'mck': 'mcdonalds',
+      'mek': 'mcdonalds',
+      'meka': 'mcdonalds',
+      'mekdonalds': 'mcdonalds',
+      'mekdonaldsa': 'mcdonalds',
+      'mcdonalds': 'mcdonalds',
+      'mcdonaldsa': 'mcdonalds',
+      'mcdonald': 'mcdonalds',
+      'mac': 'mcdonalds',
+      'maccas': 'mcdonalds',
+      'hofer': 'hofer',
+      'hofra': 'hofer',
+      'hoferja': 'hofer',
+      'lidl': 'lidl',
+      'lidla': 'lidl',
+      'spar': 'spar',
+      'spara': 'spar',
+      'interspar': 'spar',
+      'interspara': 'spar',
+      'mercator': 'mercator',
+      'mercatorja': 'mercator',
+      'merkator': 'mercator',
+      'merkatorja': 'mercator',
+      'lekarna': 'lekarna',
+      'lekarne': 'lekarna',
+      'lekarni': 'lekarna',
+      'lekarno': 'lekarna',
+      'pharmacy': 'lekarna',
+      'gimnazija': 'gimnazija',
+      'gimnazije': 'gimnazija',
+      'gimnazijo': 'gimnazija',
+      'faks': 'faks',
+      'faksa': 'faks',
+      'fakulteta': 'faks',
+      'fakultete': 'faks',
+      'fakulteto': 'faks',
+    };
+
+    String? matchedBrand;
+    for (final tok in tokens) {
+      final group = brandKeywordGroups[tok];
+      if (group != null) {
+        matchedBrand = group;
+        break;
+      }
+    }
+    if (matchedBrand == null) {
+      // Also catch substring stems like "mekdonalds" or "interspar" in compound words.
+      for (final entry in brandKeywordGroups.entries) {
+        if (entry.key.length >= 4 && cleanQuery.contains(entry.key)) {
+          matchedBrand = entry.value;
+          break;
+        }
+      }
+    }
+
+    if (matchedBrand == null) {
+      return const [];
+    }
+
+    final branchPlaces = allSearchablePlaces
+        .where((p) => p.brandGroup == matchedBrand)
+        .toList(growable: false);
+    if (branchPlaces.length <= 1) {
+      return const [];
+    }
+
+    // Check if the user already specified a specific branch (e.g. "mc europark",
+    // "hofer pobrezje", "lidl titova").
+    final specificMatches = <Place>[];
+    final extraTokens = tokens
+        .where((t) => brandKeywordGroups[t] != matchedBrand && t.length >= 2)
+        .toList();
+    if (extraTokens.isNotEmpty) {
+      for (final p in branchPlaces) {
+        final haystack = _foldDiacritics(
+          '${p.name} ${p.address} ${p.aliases.join(' ')}',
+        );
+        if (extraTokens.every((t) => haystack.contains(t))) {
+          specificMatches.add(p);
+        }
+      }
+      if (specificMatches.length == 1) {
+        return [
+          _toCandidate(
+            place: specificMatches.first,
+            userLatLng: userLatLng,
+            wheelchairOnly: wheelchairOnly,
+          ),
+        ];
+      }
+      if (specificMatches.length > 1) {
+        final out = [
+          for (final p in specificMatches)
+            _toCandidate(
+              place: p,
+              userLatLng: userLatLng,
+              wheelchairOnly: wheelchairOnly,
+            ),
+        ]..sort((a, b) => a.distanceMeters.compareTo(b.distanceMeters));
+        return out;
+      }
+    }
+
+    // Return all branches for this brand sorted nearest-first!
+    final candidates = [
+      for (final p in branchPlaces)
+        _toCandidate(
+          place: p,
+          userLatLng: userLatLng,
+          wheelchairOnly: wheelchairOnly,
+        ),
+    ]..sort((a, b) => a.distanceMeters.compareTo(b.distanceMeters));
+    return candidates;
+  }
+
+  static GeminiPlaceCandidate _toCandidate({
+    required Place place,
+    required LatLng userLatLng,
+    required bool wheelchairOnly,
+  }) {
+    final stop = _nearestStopForPoint(
+      place.position,
+      preferredStopIds: place.nearestStopIds,
+      wheelchairOnly: wheelchairOnly,
+    );
+    return GeminiPlaceCandidate(
+      placeId: place.id,
+      name: place.name,
+      address: place.address,
+      position: place.position,
+      distanceMeters: GeoUtils.haversineMeters(userLatLng, place.position),
+      nearestStopName: stop?.name,
+      nearestStopId: stop?.id,
+      lineIds: stop?.lineIds ?? const [],
+    );
+  }
+
+  static BusStop? _nearestStopForPoint(
+    LatLng point, {
+    List<String> preferredStopIds = const [],
+    bool wheelchairOnly = false,
+  }) {
+    final stopsById = {for (final s in seedStops) s.id: s};
+    for (final id in preferredStopIds) {
+      final s = stopsById[id];
+      if (s != null && (!wheelchairOnly || s.isStepFree)) {
+        return s;
+      }
+    }
+    BusStop? best;
+    var bestDist = double.infinity;
+    for (final s in seedStops) {
+      if (wheelchairOnly && !s.isStepFree) continue;
+      final d = GeoUtils.haversineMeters(point, s.position);
+      if (d < bestDist) {
+        bestDist = d;
+        best = s;
+      }
+    }
+    return best;
+  }
+
+  Future<List<GeminiPlaceCandidate>> _searchGooglePlacesInMaribor({
+    required String query,
+    required LatLng userLatLng,
+    required bool wheelchairOnly,
+  }) async {
+    final out = <GeminiPlaceCandidate>[];
+    if (WebDirectionsBridge.isSupported) {
+      final jsPlaces = await WebDirectionsBridge.searchPlacesInMaribor(
+        query: query,
+        userLocation: userLatLng,
+      );
+      if (jsPlaces != null && jsPlaces.isNotEmpty) {
+        for (var i = 0; i < jsPlaces.length; i++) {
+          final raw = jsPlaces[i];
+          final lat = (raw['lat'] as num?)?.toDouble();
+          final lng = (raw['lng'] as num?)?.toDouble();
+          if (lat == null || lng == null || !_isInsideMariborBounds(lat, lng)) {
+            continue;
+          }
+          final pos = LatLng(lat, lng);
+          final stop = _nearestStopForPoint(pos, wheelchairOnly: wheelchairOnly);
+          out.add(
+            GeminiPlaceCandidate(
+              placeId: (raw['id'] as String?) ?? 'gplace_$i',
+              name: (raw['name'] as String?) ?? query,
+              address: (raw['address'] as String?) ?? 'Maribor',
+              position: pos,
+              distanceMeters: GeoUtils.haversineMeters(userLatLng, pos),
+              nearestStopName: stop?.name,
+              nearestStopId: stop?.id,
+              lineIds: stop?.lineIds ?? const [],
+            ),
+          );
+        }
+      }
+    }
+
+    if (out.isEmpty && !kIsWeb && GoogleMapsConfig.webApiKey.isNotEmpty) {
+      try {
+        final uri = Uri.parse(
+          'https://places.googleapis.com/v1/places:searchText',
+        );
+        final res = await _client
+            .post(
+              uri,
+              headers: {
+                'Content-Type': 'application/json',
+                'X-Goog-Api-Key': GoogleMapsConfig.webApiKey,
+                'X-Goog-FieldMask':
+                    'places.id,places.displayName,places.formattedAddress,places.location',
+              },
+              body: jsonEncode({
+                'textQuery': '$query Maribor, Slovenia',
+                'maxResultCount': 8,
+                'locationRestriction': {
+                  'rectangle': {
+                    'low': {'latitude': _minLat, 'longitude': _minLng},
+                    'high': {'latitude': _maxLat, 'longitude': _maxLng},
+                  },
+                },
+              }),
+            )
+            .timeout(const Duration(seconds: 6));
+        if (res.statusCode == 200) {
+          final decoded = jsonDecode(res.body) as Map<String, dynamic>;
+          final list = (decoded['places'] as List?) ?? const [];
+          for (var i = 0; i < list.length; i++) {
+            final item = list[i] as Map<String, dynamic>;
+            final loc = item['location'] as Map<String, dynamic>?;
+            final lat = (loc?['latitude'] as num?)?.toDouble();
+            final lng = (loc?['longitude'] as num?)?.toDouble();
+            if (lat == null ||
+                lng == null ||
+                !_isInsideMariborBounds(lat, lng)) {
+              continue;
+            }
+            final displayObj = item['displayName'];
+            final name = displayObj is Map
+                ? (displayObj['text'] as String?) ?? query
+                : query;
+            final pos = LatLng(lat, lng);
+            final stop =
+                _nearestStopForPoint(pos, wheelchairOnly: wheelchairOnly);
+            out.add(
+              GeminiPlaceCandidate(
+                placeId: (item['id'] as String?) ?? 'rest_place_$i',
+                name: name,
+                address: (item['formattedAddress'] as String?) ?? 'Maribor',
+                position: pos,
+                distanceMeters: GeoUtils.haversineMeters(userLatLng, pos),
+                nearestStopName: stop?.name,
+                nearestStopId: stop?.id,
+                lineIds: stop?.lineIds ?? const [],
+              ),
+            );
+          }
+        }
+      } catch (_) {
+        // Silently degrade to single-match Gemini flow.
+      }
+    }
+
+    out.sort((a, b) => a.distanceMeters.compareTo(b.distanceMeters));
+    return out;
+  }
+
+  static GeminiResolvedTrip? _tryLocalMariborMatch({
+    required String userQuery,
+    required LatLng? userLocation,
+    required bool defaultWheelchairOnly,
+    required String localeCode,
+  }) {
+    final clean = _foldDiacritics(userQuery).trim();
+    if (clean.isEmpty) return null;
+
+    final wheelchairOnly =
+        defaultWheelchairOnly || _mentionsMobilityImpairment(userQuery);
+    final fallbackOrigin = userLocation ?? const LatLng(46.5547, 15.6459);
+
+    final (originName, originPos, destQuery) = _extractOriginAndDestQuery(
+      userQuery: userQuery,
+      fallbackOrigin: fallbackOrigin,
+      localeCode: localeCode,
+    );
 
     final destMatch =
         _findBestLocationMatch(destQuery) ?? _findBestLocationMatch(clean);
@@ -654,8 +1141,19 @@ User query: "$userQuery"
       }
     }
 
-    for (final p in seedPlaces) {
+    for (final p in allSearchablePlaces) {
       consider(p.name, p.position);
+      for (final alias in p.aliases) {
+        final foldedAlias = _foldDiacritics(alias);
+        if (foldedAlias.length >= 2 &&
+            (q == foldedAlias || q.contains(foldedAlias))) {
+          const aliasScore = 80;
+          if (aliasScore > bestScore) {
+            bestScore = aliasScore;
+            bestMatch = (p.name, p.position);
+          }
+        }
+      }
     }
     for (final s in seedStops) {
       consider(s.name, s.position);
@@ -672,6 +1170,9 @@ User query: "$userQuery"
         .replaceAll('ž', 'z')
         .replaceAll('đ', 'd');
   }
+
+  static bool _isInsideMariborBounds(double lat, double lng) =>
+      lat >= _minLat && lat <= _maxLat && lng >= _minLng && lng <= _maxLng;
 
   static LatLng _fallbackCoordinateForName(String name) {
     final matched = _findBestLocationMatch(name);

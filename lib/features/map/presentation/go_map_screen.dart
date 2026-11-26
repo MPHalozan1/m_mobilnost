@@ -3,7 +3,6 @@
 //**********************************************
 
 import 'dart:async';
-import 'dart:ui';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -16,11 +15,16 @@ import '../../../core/maps/google_map_3d_widget.dart';
 import '../../../core/maps/google_map_models.dart';
 import '../../../core/network/gemini_transit_service.dart';
 import '../../../core/network/marprom_route_fusion.dart';
+import '../../../core/network/route_geometry_service.dart';
+import '../../../core/theme/colors.dart';
 import '../../../core/utils/distance.dart';
 import '../../../core/utils/geo.dart';
 import '../../../data/models/bus_line.dart';
+import '../../../data/models/bus_position.dart';
 import '../../../data/models/bus_stop.dart';
+import '../../../data/models/place.dart';
 import '../../../data/models/trip_plan.dart';
+import '../../../data/repositories/repository_providers.dart';
 import '../../../data/seed/seed_places.dart';
 import '../../lines/data/transit_providers.dart';
 import '../../trip_planner/domain/route_planner.dart';
@@ -61,6 +65,8 @@ class _GoMapScreenState extends ConsumerState<GoMapScreen> {
   TripEndpoint? _destination;
   List<TripOption> _options = const [];
   TripOption? _selectedOption;
+  List<GeminiPlaceCandidate> _placeCandidates = const [];
+  GeminiResolvedTrip? _pendingBaseTrip;
 
   bool _manualMode = false;
   bool _loading = false;
@@ -143,6 +149,8 @@ class _GoMapScreenState extends ConsumerState<GoMapScreen> {
       _errorDiagnostics = null;
       _showDiagnostics = false;
       _isLateNightBanner = false;
+      _placeCandidates = const [];
+      _pendingBaseTrip = null;
     });
 
     try {
@@ -219,15 +227,43 @@ class _GoMapScreenState extends ConsumerState<GoMapScreen> {
       );
     }
 
+    if (outcome.needsDisambiguation) {
+      setState(() {
+        _origin = TripEndpoint(
+          kind: TripEndpointKind.gps,
+          position: resolved.originPosition,
+        );
+        _destination = null;
+        _placeCandidates = outcome.candidates;
+        _pendingBaseTrip = resolved;
+        _options = const [];
+        _selectedOption = null;
+        _desktopPanelOpen = true;
+        _isLateNightBanner = false;
+        _showDiagnostics = false;
+        _errorDiagnostics = null;
+        _errorMessage = null;
+      });
+      return;
+    }
+
     setState(() {
       _origin = TripEndpoint(
         kind: TripEndpointKind.gps,
         position: resolved.originPosition,
       );
-      _destination = TripEndpoint(
-        kind: TripEndpointKind.place,
-        position: resolved.destinationPosition,
+      _destination = TripEndpoint.place(
+        Place(
+          id: 'ai_dest',
+          name: resolved.destinationName,
+          category: 'place',
+          address: resolved.destinationName,
+          position: resolved.destinationPosition,
+          nearestStopIds: const [],
+        ),
       );
+      _placeCandidates = const [];
+      _pendingBaseTrip = null;
       _options = outcome.routes;
       _selectedOption = outcome.routes.isNotEmpty ? outcome.routes.first : null;
       _desktopPanelOpen = true;
@@ -242,6 +278,65 @@ class _GoMapScreenState extends ConsumerState<GoMapScreen> {
                   : 'Night service pause (23:15–05:00).')
               : null);
     });
+  }
+
+  Future<void> _selectPlaceCandidate(GeminiPlaceCandidate candidate) async {
+    final base = _pendingBaseTrip;
+    final originPos = _origin?.position ??
+        base?.originPosition ??
+        ref.read(liveGpsPositionNotifierProvider).value ??
+        GeoUtils.mariborCenter;
+    final settings = ref.read(a11ySettingsProvider);
+    final isSl = settings.localeCode == 'sl';
+    final originName = base?.originName ??
+        (isSl ? 'Moja lokacija' : 'My Current Location');
+
+    setState(() {
+      _loading = true;
+      _errorMessage = null;
+      _errorDiagnostics = null;
+      _showDiagnostics = false;
+      _isLateNightBanner = false;
+      _destination = TripEndpoint.place(
+        Place(
+          id: candidate.placeId,
+          name: candidate.name,
+          category: 'place',
+          address: candidate.address,
+          position: candidate.position,
+          nearestStopIds: candidate.nearestStopId != null
+              ? [candidate.nearestStopId!]
+              : const [],
+        ),
+      );
+    });
+
+    try {
+      final gemini = ref.read(geminiTransitServiceProvider);
+      final planner = ref.read(routePlannerProvider);
+      final outcome = await gemini.planToCandidate(
+        originName: originName,
+        originPosition: originPos,
+        candidate: candidate,
+        planner: planner,
+        wheelchairOnly:
+            base?.wheelchairOnly ?? settings.wheelchairAccessibleOnly,
+        routingPreference: base?.routingPreference ?? 'FEWER_TRANSFERS',
+        localeCode: settings.localeCode,
+      );
+      if (!mounted) return;
+      _handleAiResult(outcome);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _errorMessage = isSl
+            ? 'Napaka pri izračunu poti do ${candidate.name}: $e'
+            : 'Failed to route to ${candidate.name}: $e';
+        _errorDiagnostics = e.toString();
+      });
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
   }
 
   Future<void> _routeToStop(BusStop stop, UserLocationState? loc) async {
@@ -290,28 +385,32 @@ class _GoMapScreenState extends ConsumerState<GoMapScreen> {
     if (option != null) {
       for (var i = 0; i < option.legs.length; i++) {
         final leg = option.legs[i];
-        if (leg.polyline.length >= 2) {
+        final rawPts = leg.type == TripLegType.bus
+            ? roadPathForBusLeg(leg, linesById: linesById)
+            : leg.polyline;
+        final legPts = rawPts.length >= 2 ? rawPts : leg.polyline;
+        if (legPts.length >= 2) {
           final isWalk = leg.type == TripLegType.walk;
-          final lineMeta = linesById[leg.lineId];
-          final busColor = lineMeta?.color ?? theme.colorScheme.primary;
           polylines.add(
             GoogleMap3DPolylineData(
               id: 'go_leg_${option.id}_$i',
-              points: leg.polyline,
-              color: isWalk ? const Color(0xFF3B82F6) : busColor,
-              strokeWidth: isWalk ? 4.5 : 6.5,
+              points: legPts,
+              color: isWalk ? kGoogleMapsWalkBlue : kGoogleMapsRouteBlue,
+              casingColor: isWalk ? null : kGoogleMapsRouteCasingBlue,
+              strokeWidth: isWalk ? 5.0 : 7.0,
               isDashed: isWalk,
+              zIndex: isWalk ? 4 : 5,
             ),
           );
         }
-        if (leg.polyline.isNotEmpty && leg.type == TripLegType.bus) {
+        if (legPts.isNotEmpty && leg.type == TripLegType.bus) {
           final lineMeta = linesById[leg.lineId];
           final code = lineMeta?.code ?? leg.lineCode;
-          final busColor = lineMeta?.color ?? theme.colorScheme.primary;
+          final busColor = lineMeta?.color ?? kGoogleMapsRouteBlue;
           markers.add(
             GoogleMap3DMarkerData(
               id: 'leg_board_${option.id}_$i',
-              position: leg.polyline.first,
+              position: legPts.first,
               shortLabel: code,
               isBus: code != null,
               isSelected: true,
@@ -324,7 +423,7 @@ class _GoMapScreenState extends ConsumerState<GoMapScreen> {
           markers.add(
             GoogleMap3DMarkerData(
               id: 'leg_alight_${option.id}_$i',
-              position: leg.polyline.last,
+              position: legPts.last,
               label: leg.toName,
               color: busColor,
             ),
@@ -338,6 +437,20 @@ class _GoMapScreenState extends ConsumerState<GoMapScreen> {
             position: option.legs.last.polyline.last,
             label: _destination?.rawName ?? option.legs.last.toName,
             color: const Color(0xFF16A34A),
+          ),
+        );
+      }
+    } else if (_placeCandidates.isNotEmpty) {
+      for (var i = 0; i < _placeCandidates.length; i++) {
+        final cand = _placeCandidates[i];
+        markers.add(
+          GoogleMap3DMarkerData(
+            id: 'cand_$i',
+            position: cand.position,
+            label: '${i + 1}. ${cand.name} (${cand.address})',
+            badgeNumber: '${i + 1}',
+            isSelected: true,
+            color: MarpromColors.marpromRed,
           ),
         );
       }
@@ -414,25 +527,51 @@ class _GoMapScreenState extends ConsumerState<GoMapScreen> {
           nearestStops: nearestStops,
         );
 
+        final shouldFit = _selectedOption != null || _placeCandidates.isNotEmpty;
         final fitSig = _selectedOption != null
             ? 'route_${_selectedOption!.id}_$_use3DView'
-            : 'idle_${effectivePos.latitude.toStringAsFixed(3)}';
+            : (_placeCandidates.isNotEmpty
+                ? 'cands_${_placeCandidates.map((c) => c.placeId).join('_')}_$_use3DView'
+                : 'idle_${effectivePos.latitude.toStringAsFixed(3)}');
 
-        final mapLayer = GoogleMap3DWidget(
+        final mapLayer = _GoLiveMapSurface(
           initialCenter: effectivePos,
-          initialZoom: _selectedOption != null ? 14.2 : 14.8,
-          polylines3D: polylines,
-          markers3D: markers,
-          initialUse3D: _use3DView,
-          showStatusPill: false,
-          fitBounds: _selectedOption != null,
+          initialZoom: _selectedOption != null
+              ? 14.2
+              : (_placeCandidates.isNotEmpty ? 13.4 : 14.5),
+          polylines: polylines,
+          baseMarkers: markers,
+          linesById: linesById,
+          accessibleOnly: settings.wheelchairAccessibleOnly,
+          use3DView: _use3DView,
+          fitBounds: shouldFit,
           fitSignature: fitSig,
+          recenterLabel: isSl ? 'Moja lokacija' : 'My Location',
           onMarkerTap: (markerId) {
+            if (markerId.startsWith('cand_')) {
+              final idx = int.tryParse(markerId.substring('cand_'.length));
+              if (idx != null && idx >= 0 && idx < _placeCandidates.length) {
+                unawaited(_selectPlaceCandidate(_placeCandidates[idx]));
+              }
+              return;
+            }
             if (markerId.startsWith('stop_')) {
               final stopId = markerId.substring('stop_'.length);
               final stop = stopsById[stopId];
               if (stop != null) {
                 unawaited(_routeToStop(stop, locState));
+              }
+              return;
+            }
+            if (markerId.startsWith('bus_')) {
+              final vehicleId = markerId.substring('bus_'.length);
+              final buses = ref.read(liveBusesStreamProvider).valueOrNull ??
+                  ref.read(busSimulatorProvider).snapshotAt(DateTime.now());
+              for (final b in buses) {
+                if (b.vehicleId == vehicleId) {
+                  context.push('/lines/${b.lineId}');
+                  break;
+                }
               }
             }
           },
@@ -445,7 +584,6 @@ class _GoMapScreenState extends ConsumerState<GoMapScreen> {
               ref.invalidate(userLocationProvider);
             }
           },
-          recenterLabel: isSl ? 'Moja lokacija' : 'My Location',
         );
 
         final controlsColumn = Column(
@@ -474,7 +612,7 @@ class _GoMapScreenState extends ConsumerState<GoMapScreen> {
                   children: [
                     SmartStationPairSelector(
                       stops: stops,
-                      places: seedPlaces,
+                      places: allSearchablePlaces,
                       origin: _origin,
                       destination: _destination,
                       userPosition: effectivePos,
@@ -538,14 +676,17 @@ class _GoMapScreenState extends ConsumerState<GoMapScreen> {
                       }
                     },
                   ),
-                  if (_selectedOption != null) ...[
-                    const SizedBox(width: 8),
-                    FilterChip(
-                      selected: _use3DView,
-                      avatar: const Icon(Icons.threed_rotation_rounded, size: 18),
-                      label: Text(isSl ? '3D pogled' : '3D Route'),
-                      onSelected: (v) => setState(() => _use3DView = v),
-                    ),
+                  if (_selectedOption != null || _placeCandidates.isNotEmpty) ...[
+                    if (_selectedOption != null) ...[
+                      const SizedBox(width: 8),
+                      FilterChip(
+                        selected: _use3DView,
+                        avatar:
+                            const Icon(Icons.threed_rotation_rounded, size: 18),
+                        label: Text(isSl ? '3D pogled' : '3D Route'),
+                        onSelected: (v) => setState(() => _use3DView = v),
+                      ),
+                    ],
                     const SizedBox(width: 8),
                     ActionChip(
                       avatar: const Icon(Icons.clear_rounded, size: 16),
@@ -554,6 +695,8 @@ class _GoMapScreenState extends ConsumerState<GoMapScreen> {
                         setState(() {
                           _options = const [];
                           _selectedOption = null;
+                          _placeCandidates = const [];
+                          _pendingBaseTrip = null;
                           _errorMessage = null;
                           _errorDiagnostics = null;
                           _showDiagnostics = false;
@@ -674,6 +817,7 @@ class _GoMapScreenState extends ConsumerState<GoMapScreen> {
           loading: _loading,
           options: _options,
           selectedOption: _selectedOption,
+          candidates: _placeCandidates,
           nearestStops: nearestStops,
           linesById: linesById,
           originLabel: _origin?.displayLabel(l10n) ?? (isSl ? 'Odhod' : 'Origin'),
@@ -681,6 +825,7 @@ class _GoMapScreenState extends ConsumerState<GoMapScreen> {
               _destination?.displayLabel(l10n) ?? (isSl ? 'Cilj' : 'Destination'),
           gpsActive: locState?.isGps ?? false,
           onSelectOption: (opt) => setState(() => _selectedOption = opt),
+          onSelectCandidate: (cand) => unawaited(_selectPlaceCandidate(cand)),
           onToggle3D: () => setState(() => _use3DView = true),
           onRouteToStop: (stop) => unawaited(_routeToStop(stop, locState)),
           onOpenStopDepartures: (stopId) => context.push('/stops/$stopId'),
@@ -747,7 +892,10 @@ class _GoMapScreenState extends ConsumerState<GoMapScreen> {
                   ),
                 ),
                 DraggableScrollableSheet(
-                  initialChildSize: _options.isNotEmpty ? 0.36 : 0.28,
+                  initialChildSize:
+                      (_options.isNotEmpty || _placeCandidates.isNotEmpty)
+                          ? 0.40
+                          : 0.28,
                   minChildSize: 0.14,
                   maxChildSize: 0.84,
                   builder: (context, scrollController) {
@@ -785,6 +933,7 @@ class _GoMapScreenState extends ConsumerState<GoMapScreen> {
                                 loading: _loading,
                                 options: _options,
                                 selectedOption: _selectedOption,
+                                candidates: _placeCandidates,
                                 nearestStops: nearestStops,
                                 linesById: linesById,
                                 originLabel: _origin?.displayLabel(l10n) ??
@@ -796,6 +945,8 @@ class _GoMapScreenState extends ConsumerState<GoMapScreen> {
                                 scrollController: scrollController,
                                 onSelectOption: (opt) =>
                                     setState(() => _selectedOption = opt),
+                                onSelectCandidate: (cand) =>
+                                    unawaited(_selectPlaceCandidate(cand)),
                                 onToggle3D: () =>
                                     setState(() => _use3DView = true),
                                 onRouteToStop: (stop) =>
@@ -831,29 +982,118 @@ class _GlassOverlayCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return ClipRRect(
+    return Material(
+      color: theme.colorScheme.surface.withValues(alpha: 0.98),
       borderRadius: BorderRadius.circular(20),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
-        child: Container(
-          padding: padding,
-          decoration: BoxDecoration(
-            color: theme.colorScheme.surface.withValues(alpha: 0.94),
-            borderRadius: BorderRadius.circular(20),
-            border: Border.all(
-              color: theme.colorScheme.outlineVariant.withValues(alpha: 0.65),
-            ),
-            boxShadow: const [
-              BoxShadow(
-                color: Colors.black26,
-                blurRadius: 16,
-                offset: Offset(0, 6),
-              ),
-            ],
+      elevation: 8,
+      shadowColor: Colors.black.withValues(alpha: 0.22),
+      child: Container(
+        padding: padding,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+            color: theme.colorScheme.outlineVariant.withValues(alpha: 0.72),
           ),
-          child: child,
         ),
+        child: child,
       ),
+    );
+  }
+}
+
+class _GoLiveMapSurface extends ConsumerWidget {
+  const _GoLiveMapSurface({
+    required this.initialCenter,
+    required this.initialZoom,
+    required this.polylines,
+    required this.baseMarkers,
+    required this.linesById,
+    required this.accessibleOnly,
+    required this.use3DView,
+    required this.fitBounds,
+    required this.fitSignature,
+    required this.recenterLabel,
+    required this.onMarkerTap,
+    required this.onRecenter2D,
+  });
+
+  final LatLng initialCenter;
+  final double initialZoom;
+  final List<GoogleMap3DPolylineData> polylines;
+  final List<GoogleMap3DMarkerData> baseMarkers;
+  final Map<String, BusLine> linesById;
+  final bool accessibleOnly;
+  final bool use3DView;
+  final bool fitBounds;
+  final String fitSignature;
+  final String recenterLabel;
+  final ValueChanged<String> onMarkerTap;
+  final VoidCallback onRecenter2D;
+
+  Color _occColor(BusPosition bus) {
+    if (bus.loadPercent >= 85) return MarpromColors.marpromRed;
+    if (bus.loadPercent >= 60) return const Color(0xFFF59E0B);
+    return const Color(0xFF16A34A);
+  }
+
+  Color _ringColor(BusPosition bus) {
+    if (bus.delaySeconds > 120) return const Color(0xFFDC2626);
+    if (bus.delaySeconds < -60) return const Color(0xFF06B6D4);
+    return const Color(0xFF22C55E);
+  }
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final useSimulatedLive = ref.watch(
+      a11ySettingsProvider.select((s) => s.useSimulatedLive),
+    );
+    final asyncBuses = ref.watch(liveBusesStreamProvider);
+    final rawBuses = useSimulatedLive
+        ? (asyncBuses.hasValue
+            ? asyncBuses.value!
+            : ref.read(busSimulatorProvider).snapshotAt(DateTime.now()))
+        : const <BusPosition>[];
+
+    final visibleBuses = accessibleOnly
+        ? rawBuses.where((b) => b.isWheelchairAccessible).toList(growable: false)
+        : rawBuses;
+
+    final mergedMarkers = <GoogleMap3DMarkerData>[
+      ...baseMarkers,
+      for (final bus in visibleBuses)
+        GoogleMap3DMarkerData(
+          id: 'bus_${bus.vehicleId}',
+          position: bus.position,
+          shortLabel: bus.lineCode,
+          label:
+              '${bus.lineCode} → ${bus.nextStopName} (${bus.passengerCount}/${bus.vehicleCapacity})',
+          isBus: true,
+          isWheelchairAccessible: bus.isWheelchairAccessible,
+          headingDegrees: bus.headingDegrees,
+          color: linesById[bus.lineId]?.color ?? MarpromColors.marpromRed,
+          statusColor: _ringColor(bus),
+          occupancyPercent: bus.loadPercent,
+          occupancyColor: _occColor(bus),
+        ),
+    ];
+
+    return GoogleMap3DWidget(
+      initialCenter: initialCenter,
+      initialZoom: initialZoom,
+      polylines3D: polylines,
+      markers3D: mergedMarkers,
+      initialUse3D: use3DView,
+      showStatusPill: false,
+      fitBounds: fitBounds,
+      fitSignature: fitSignature,
+      activeBusCount: visibleBuses.length,
+      totalPassengers: visibleBuses.fold<int>(
+        0,
+        (sum, b) => sum + b.passengerCount,
+      ),
+      onMarkerTap: onMarkerTap,
+      onRecenter2D: onRecenter2D,
+      recenterLabel: recenterLabel,
     );
   }
 }
@@ -864,12 +1104,14 @@ class _ResultsBody extends StatelessWidget {
     required this.loading,
     required this.options,
     required this.selectedOption,
+    required this.candidates,
     required this.nearestStops,
     required this.linesById,
     required this.originLabel,
     required this.destinationLabel,
     required this.gpsActive,
     required this.onSelectOption,
+    required this.onSelectCandidate,
     required this.onToggle3D,
     required this.onRouteToStop,
     required this.onOpenStopDepartures,
@@ -880,12 +1122,14 @@ class _ResultsBody extends StatelessWidget {
   final bool loading;
   final List<TripOption> options;
   final TripOption? selectedOption;
+  final List<GeminiPlaceCandidate> candidates;
   final List<NearbyStopSummary> nearestStops;
   final Map<String, BusLine> linesById;
   final String originLabel;
   final String destinationLabel;
   final bool gpsActive;
   final ValueChanged<TripOption> onSelectOption;
+  final ValueChanged<GeminiPlaceCandidate> onSelectCandidate;
   final VoidCallback onToggle3D;
   final ValueChanged<BusStop> onRouteToStop;
   final ValueChanged<String> onOpenStopDepartures;
@@ -910,6 +1154,47 @@ class _ResultsBody extends StatelessWidget {
             textAlign: TextAlign.center,
             style: theme.textTheme.bodyMedium,
           ),
+        ],
+      );
+    }
+
+    if (candidates.length > 1 && options.isEmpty) {
+      return ListView(
+        controller: scrollController,
+        padding: const EdgeInsets.fromLTRB(12, 4, 12, 24),
+        children: [
+          Row(
+            children: [
+              Icon(
+                Icons.pin_drop_rounded,
+                size: 18,
+                color: MarpromColors.marpromRed,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  isSl
+                      ? 'Izberite želeno lokacijo (${candidates.length})'
+                      : 'Choose destination location (${candidates.length})',
+                  style: theme.textTheme.titleSmall?.copyWith(
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          for (var i = 0; i < candidates.length; i++) ...[
+            _PlaceCandidateCard(
+              index: i + 1,
+              candidate: candidates[i],
+              linesById: linesById,
+              isSl: isSl,
+              l10n: l10n,
+              onTap: () => onSelectCandidate(candidates[i]),
+            ),
+            const SizedBox(height: 8),
+          ],
         ],
       );
     }
@@ -1016,6 +1301,134 @@ class _ResultsBody extends StatelessWidget {
           ),
         ],
       ],
+    );
+  }
+}
+
+class _PlaceCandidateCard extends StatelessWidget {
+  const _PlaceCandidateCard({
+    required this.index,
+    required this.candidate,
+    required this.linesById,
+    required this.isSl,
+    required this.l10n,
+    required this.onTap,
+  });
+
+  final int index;
+  final GeminiPlaceCandidate candidate;
+  final Map<String, BusLine> linesById;
+  final bool isSl;
+  final dynamic l10n;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final distText = DistanceUtils.formatMeters(candidate.distanceMeters, l10n);
+
+    return Card(
+      margin: EdgeInsets.zero,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
+        side: BorderSide(color: scheme.outlineVariant),
+      ),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(14),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              CircleAvatar(
+                radius: 15,
+                backgroundColor: MarpromColors.marpromRed,
+                foregroundColor: Colors.white,
+                child: Text(
+                  '$index',
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w900,
+                    fontSize: 13,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      candidate.name,
+                      style: theme.textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      '${candidate.address} • $distText',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    ),
+                    if (candidate.nearestStopName != null) ...[
+                      const SizedBox(height: 6),
+                      Wrap(
+                        spacing: 5,
+                        runSpacing: 4,
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        children: [
+                          Icon(
+                            Icons.directions_bus_rounded,
+                            size: 14,
+                            color: scheme.primary,
+                          ),
+                          Text(
+                            candidate.nearestStopName!,
+                            style: theme.textTheme.labelSmall?.copyWith(
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          for (final lineId in candidate.lineIds.take(4))
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 6,
+                                vertical: 2,
+                              ),
+                              decoration: BoxDecoration(
+                                color: linesById[lineId]?.color ??
+                                    const Color(0xFF4285F4),
+                                borderRadius: BorderRadius.circular(6),
+                              ),
+                              child: Text(
+                                linesById[lineId]?.code ?? lineId,
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 10.5,
+                                  fontWeight: FontWeight.w900,
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              FilledButton.tonal(
+                onPressed: onTap,
+                style: FilledButton.styleFrom(
+                  minimumSize: const Size(0, 38),
+                  padding: const EdgeInsets.symmetric(horizontal: 10),
+                ),
+                child: Text(isSl ? 'Pot' : 'Route'),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

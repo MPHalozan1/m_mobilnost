@@ -5,6 +5,15 @@
 import 'package:flutter/material.dart';
 import 'package:latlong2/latlong.dart';
 
+/// Authentic Google Maps route stroke fill color (never yellowish).
+const Color kGoogleMapsRouteBlue = Color(0xFF4285F4);
+
+/// Authentic Google Maps route outer casing border color.
+const Color kGoogleMapsRouteCasingBlue = Color(0xFF185ABC);
+
+/// Authentic Google Maps pedestrian dotted-path blue.
+const Color kGoogleMapsWalkBlue = Color(0xFF1A73E8);
+
 /// Supported Google Maps visual styles (locked to default crisp Light Roadmap).
 enum GoogleMapStylePreset {
   /// Clean light Google road map (always active).
@@ -26,6 +35,7 @@ class GoogleMap3DMarkerData {
     required this.position,
     required this.label,
     this.shortLabel,
+    this.badgeNumber,
     this.isBus = false,
     this.isUserLocation = false,
     this.isSelected = false,
@@ -48,6 +58,9 @@ class GoogleMap3DMarkerData {
 
   /// Optional compact line code rendered inside bus pills (e.g. `G1`, `P12`).
   final String? shortLabel;
+
+  /// Optional numbered badge (`"1"`, `"2"`, ...) for multi-place choice pins.
+  final String? badgeNumber;
 
   /// True for live buses; false for stops or transfer landmarks.
   final bool isBus;
@@ -85,8 +98,10 @@ class GoogleMap3DPolylineData {
     required this.id,
     required this.points,
     required this.color,
+    this.casingColor,
     this.strokeWidth = 6.0,
     this.isDashed = false,
+    this.zIndex = 2,
   });
 
   /// Unique line/route ID.
@@ -95,14 +110,20 @@ class GoogleMap3DPolylineData {
   /// Ordered geographic coordinates along the route.
   final List<LatLng> points;
 
-  /// Stroke color matching the Marprom line badge or walking accent.
+  /// Stroke color matching Google Maps route blue, Marprom line color, or walking blue.
   final Color color;
+
+  /// Optional outer border casing color (e.g. [kGoogleMapsRouteCasingBlue]).
+  final Color? casingColor;
 
   /// Stroke width in logical pixels.
   final double strokeWidth;
 
-  /// True for pedestrian sidewalk segments rendered as dashed lines.
+  /// True for pedestrian sidewalk segments rendered as dotted Google Maps lines.
   final bool isDashed;
+
+  /// Layer stacking order on the map.
+  final int zIndex;
 }
 
 /// Named 3D camera viewpoint across key Maribor transit hubs.

@@ -252,9 +252,11 @@ class _RouteMapPreview extends ConsumerWidget {
           GoogleMap3DPolylineData(
             id: 'leg_${option.id}_$i',
             points: legPoints,
-            color: isWalk ? scheme.outline : busColor,
-            strokeWidth: isWalk ? 4.0 : 6.5,
+            color: isWalk ? kGoogleMapsWalkBlue : kGoogleMapsRouteBlue,
+            casingColor: isWalk ? null : kGoogleMapsRouteCasingBlue,
+            strokeWidth: isWalk ? 4.5 : 7.0,
             isDashed: isWalk,
+            zIndex: isWalk ? 6 : 5,
           ),
         );
       }

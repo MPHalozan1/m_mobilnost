@@ -14,7 +14,9 @@ import 'package:m_mobilnost/core/accessibility/a11y_settings.dart';
 import 'package:m_mobilnost/core/auth/email_validator.dart';
 import 'package:m_mobilnost/core/config/download_links.dart';
 import 'package:m_mobilnost/core/firebase/firestore_transit_service.dart';
+import 'package:m_mobilnost/core/maps/google_map_3d_widget.dart';
 import 'package:m_mobilnost/core/maps/google_map_models.dart';
+import 'package:m_mobilnost/core/network/data_freshness.dart';
 import 'package:m_mobilnost/core/network/gemini_transit_service.dart';
 import 'package:m_mobilnost/core/network/google_routes_service.dart';
 import 'package:m_mobilnost/core/network/marprom_route_fusion.dart';
@@ -32,7 +34,10 @@ import 'package:m_mobilnost/data/seed/seed_lines.dart';
 import 'package:m_mobilnost/data/seed/seed_stops.dart';
 import 'package:m_mobilnost/data/simulation/bus_simulator.dart';
 import 'package:m_mobilnost/features/account/presentation/profile_settings_screen.dart';
+import 'package:m_mobilnost/features/map/data/location_service.dart';
+import 'package:m_mobilnost/features/map/presentation/go_map_screen.dart';
 import 'package:m_mobilnost/features/trip_planner/domain/route_planner.dart';
+import 'package:m_mobilnost/features/trip_planner/presentation/widgets/trip_option_card.dart';
 import 'package:m_mobilnost/l10n/app_localizations.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -566,6 +571,254 @@ void main() {
       await tester.enterText(pwdField, 'Abcde1');
       await tester.pumpAndSettle();
       expect(tester.widget<FilledButton>(submitFinder).onPressed, isNotNull);
+    });
+  });
+
+  group('Multi-Place AI Disambiguation, Google Maps Blue Routes & Live Buses', () {
+    test('GeminiTransitService offers choices for mc, mekdonaldsa, and hofer', () async {
+      final planner = RoutePlanner(
+        lineRepository: const MockLineRepository(),
+        timetableRepository: MockTimetableRepository(),
+        clock: () => DateTime(2026, 11, 26, 10, 0),
+      );
+      final service = GeminiTransitService(geminiApiKey: '');
+
+      final mcRes = await service.resolveAndPlan(
+        userQuery: 'mc',
+        planner: planner,
+        userLatLng: const LatLng(46.5575, 15.6454),
+      );
+      expect(mcRes.needsDisambiguation, isTrue);
+      expect(mcRes.routes, isEmpty);
+      expect(mcRes.candidates, hasLength(4));
+      for (final c in mcRes.candidates) {
+        expect(c.nearestStopName, isNotNull);
+        expect(c.lineIds, isNotEmpty);
+      }
+
+      final mekRes = await service.resolveAndPlan(
+        userQuery: 'Pelji me v mekdonaldsa',
+        planner: planner,
+        userLatLng: const LatLng(46.5575, 15.6454),
+      );
+      expect(mekRes.needsDisambiguation, isTrue);
+      expect(mekRes.candidates, hasLength(4));
+
+      final hoferRes = await service.resolveAndPlan(
+        userQuery: 'hofer',
+        planner: planner,
+        userLatLng: const LatLng(46.5575, 15.6454),
+      );
+      expect(hoferRes.needsDisambiguation, isTrue);
+      expect(hoferRes.candidates, hasLength(5));
+    });
+
+    test('Specific branch queries route directly & planToCandidate builds complete trip', () async {
+      final planner = RoutePlanner(
+        lineRepository: const MockLineRepository(),
+        timetableRepository: MockTimetableRepository(),
+        clock: () => DateTime(2026, 11, 26, 10, 0),
+      );
+      final service = GeminiTransitService(geminiApiKey: '');
+
+      final teznoRes = await service.resolveAndPlan(
+        userQuery: 'mc tezno',
+        planner: planner,
+        userLatLng: const LatLng(46.5575, 15.6454),
+      );
+      expect(teznoRes.needsDisambiguation, isFalse);
+      expect(teznoRes.resolvedTrip.destinationName, contains("McDonald's"));
+      expect(teznoRes.resolvedTrip.destinationName, contains('Tezno'));
+      expect(teznoRes.routes, isNotEmpty);
+
+      final europarkMcRes = await service.resolveAndPlan(
+        userQuery: 'mc europark',
+        planner: planner,
+        userLatLng: const LatLng(46.5575, 15.6454),
+      );
+      expect(europarkMcRes.needsDisambiguation, isFalse);
+      expect(europarkMcRes.resolvedTrip.destinationName, "McDonald's Europark");
+      expect(europarkMcRes.routes, isNotEmpty);
+
+      final allMc = await service.resolveAndPlan(
+        userQuery: 'mc',
+        planner: planner,
+        userLatLng: const LatLng(46.5575, 15.6454),
+      );
+      final chosenPlan = await service.planToCandidate(
+        originName: allMc.resolvedTrip.originName,
+        originPosition: allMc.resolvedTrip.originPosition,
+        candidate: allMc.candidates.first,
+        planner: planner,
+      );
+      expect(chosenPlan.routes, isNotEmpty);
+      expect(
+        chosenPlan.routes.first.legs.any((l) => l.type == TripLegType.bus),
+        isTrue,
+      );
+    });
+
+    test('RoutePlanner falls back to Marprom local RAPTOR when Google Routes returns 403', () async {
+      final failingClient = MockClient(
+        (_) async => http.Response('{"error":{"status":"PERMISSION_DENIED"}}', 403),
+      );
+      final planner = RoutePlanner(
+        lineRepository: const MockLineRepository(),
+        timetableRepository: MockTimetableRepository(),
+        googleRoutesService: GoogleRoutesService(
+          mapsApiKey: 'fake-key',
+          client: failingClient,
+        ),
+        clock: () => DateTime(2026, 11, 26, 10, 0),
+      );
+
+      final options = await planner.planTrip(
+        origin: const LatLng(46.5575, 15.6454),
+        destination: const LatLng(46.5535, 15.6533),
+        originLabel: 'Glavni trg',
+        destinationLabel: 'Europark',
+      );
+      expect(options, isNotEmpty);
+      expect(options.first.legs.any((l) => l.type == TripLegType.bus), isTrue);
+    });
+
+    testWidgets('GoMapScreen renders live buses + Google Maps blue polylines + inline step timeline',
+        (tester) async {
+      SharedPreferences.setMockInitialValues({'a11y_locale_code': 'sl'});
+      final prefs = await SharedPreferences.getInstance();
+      final now = DateTime(2026, 11, 26, 10, 0);
+      final sampleBus = BusPosition(
+        vehicleId: 'v_go_1',
+        lineId: 'G1',
+        lineCode: 'G1',
+        directionId: 'G1_out',
+        directionName: 'Tezno – Glavni trg',
+        position: const LatLng(46.5562, 15.6490),
+        progress: 0.4,
+        speedKmh: 26,
+        nextStopId: 'glavni_trg',
+        nextStopName: 'Glavni trg',
+        remainingStopsCount: 4,
+        etaToNextStopSeconds: 90,
+        delaySeconds: 0,
+        occupancy: BusOccupancyLevel.medium,
+        updatedAt: now,
+      );
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            sharedPreferencesProvider.overrideWithValue(prefs),
+            locationServiceProvider.overrideWithValue(
+              LocationService(gpsProbe: () async => null),
+            ),
+            liveBusesStreamProvider.overrideWith(
+              (ref) => Stream.value([sampleBus]),
+            ),
+            routePlannerProvider.overrideWithValue(
+              RoutePlanner(
+                lineRepository: const MockLineRepository(),
+                timetableRepository: MockTimetableRepository(),
+                clock: () => now,
+              ),
+            ),
+          ],
+          child: const MaterialApp(
+            localizationsDelegates: AppLocalizations.localizationsDelegates,
+            supportedLocales: AppLocalizations.supportedLocales,
+            locale: Locale('sl'),
+            home: GoMapScreen(
+              initialOriginStopId: 'glavni_trg',
+              initialDestinationStopId: 'europark',
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final mapWidget = tester.widget<GoogleMap3DWidget>(
+        find.byType(GoogleMap3DWidget),
+      );
+      expect(
+        mapWidget.markers3D.any((m) => m.isBus && m.shortLabel == 'G1'),
+        isTrue,
+      );
+      expect(mapWidget.polylines3D, isNotEmpty);
+      for (final poly in mapWidget.polylines3D) {
+        expect(
+          poly.color == kGoogleMapsRouteBlue || poly.color == kGoogleMapsWalkBlue,
+          isTrue,
+        );
+      }
+
+      // Selected TripOptionCard shows inline boarding/alighting timeline
+      expect(find.textContaining('Vstopi na postaji'), findsWidgets);
+    });
+
+    testWidgets('TripOptionCard displays inline step instructions when selected',
+        (tester) async {
+      final now = DateTime(2026, 11, 26, 10, 0);
+      final option = TripOption(
+        id: 'opt_1',
+        legs: [
+          TripLeg(
+            type: TripLegType.walk,
+            fromName: 'Moja lokacija',
+            toName: 'Glavni trg',
+            startTime: now,
+            endTime: now.add(const Duration(minutes: 3)),
+            durationMinutes: 3,
+            distanceMeters: 210,
+            polyline: const [LatLng(46.557, 15.645), LatLng(46.5575, 15.6454)],
+          ),
+          TripLeg(
+            type: TripLegType.bus,
+            fromName: 'Glavni trg',
+            toName: 'Europark',
+            fromStopId: 'glavni_trg',
+            toStopId: 'europark',
+            lineId: 'G1',
+            lineCode: 'G1',
+            directionId: 'G1_out',
+            directionName: 'Tezno',
+            startTime: now.add(const Duration(minutes: 4)),
+            endTime: now.add(const Duration(minutes: 9)),
+            durationMinutes: 5,
+            distanceMeters: 1300,
+            polyline: const [LatLng(46.5575, 15.6454), LatLng(46.5535, 15.6533)],
+          ),
+        ],
+        totalMinutes: 9,
+        walkMeters: 210,
+        walkMinutes: 3,
+        transferCount: 0,
+        hasTightTransfer: false,
+        freshness: DataFreshness(kind: DataSourceKind.simulated, updatedAt: now),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          localizationsDelegates: AppLocalizations.localizationsDelegates,
+          supportedLocales: AppLocalizations.supportedLocales,
+          locale: const Locale('sl'),
+          home: Scaffold(
+            body: TripOptionCard(
+              option: option,
+              index: 0,
+              isSelected: true,
+              onSelect: () {},
+              linesById: {for (final l in seedLines) l.id: l},
+              originLabel: 'Moja lokacija',
+              destinationLabel: "McDonald's Europark",
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('Peš'), findsWidgets);
+      expect(find.textContaining('Vstopi na postaji Glavni trg'), findsOneWidget);
+      expect(find.textContaining('Izstopi na Europark'), findsOneWidget);
     });
   });
 }

@@ -252,9 +252,11 @@ class _WebRoutePlannerPageState extends ConsumerState<WebRoutePlannerPage> {
             GoogleMap3DPolylineData(
               id: 'web_leg_${selectedBusOption.id}_$i',
               points: pts,
-              color: isWalk ? scheme.outline : lineColor,
-              strokeWidth: isWalk ? 4.0 : 6.5,
+              color: isWalk ? kGoogleMapsWalkBlue : kGoogleMapsRouteBlue,
+              casingColor: isWalk ? null : kGoogleMapsRouteCasingBlue,
+              strokeWidth: isWalk ? 4.5 : 7.0,
               isDashed: isWalk,
+              zIndex: isWalk ? 6 : 5,
             ),
           );
         }
@@ -306,8 +308,10 @@ class _WebRoutePlannerPageState extends ConsumerState<WebRoutePlannerPage> {
         GoogleMap3DPolylineData(
           id: 'planned_route',
           points: _googleRoute!.polylinePoints,
-          color: MarpromColors.marpromRed,
+          color: kGoogleMapsRouteBlue,
+          casingColor: kGoogleMapsRouteCasingBlue,
           strokeWidth: 7,
+          zIndex: 5,
         ),
       );
       mapMarkers3D.addAll([

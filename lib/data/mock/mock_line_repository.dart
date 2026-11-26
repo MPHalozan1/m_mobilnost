@@ -57,16 +57,17 @@ class MockLineRepository implements LineRepository {
 
   @override
   Future<List<Place>> getPlaces() async =>
-      List<Place>.unmodifiable(seedPlaces);
+      List<Place>.unmodifiable(allSearchablePlaces);
 
   @override
   Future<List<Place>> searchPlaces(String query) async {
     final trimmed = query.trim().toLowerCase();
     if (trimmed.isEmpty) return getPlaces();
-    return seedPlaces.where((place) {
+    return allSearchablePlaces.where((place) {
       return place.name.toLowerCase().contains(trimmed) ||
           place.address.toLowerCase().contains(trimmed) ||
-          place.category.toLowerCase().contains(trimmed);
+          place.category.toLowerCase().contains(trimmed) ||
+          place.aliases.any((a) => a.toLowerCase().contains(trimmed));
     }).toList(growable: false);
   }
 }

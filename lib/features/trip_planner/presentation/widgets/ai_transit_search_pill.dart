@@ -263,8 +263,8 @@ class _AiTransitSearchPillState extends ConsumerState<AiTransitSearchPill> {
                       filled: true,
                       contentPadding: const EdgeInsets.symmetric(vertical: 10),
                       hintText: isSl
-                          ? 'Kam želite? (npr. "Pelji me v Europark")'
-                          : 'Where to? (e.g. "Take me to Europark")',
+                          ? 'Kam želite? (npr. "Europark", "McDonald\'s", "UKC")'
+                          : 'Where to? (e.g. "Europark", "McDonald\'s", "UKC")',
                     ),
                   ),
                 ),

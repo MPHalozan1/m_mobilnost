@@ -2,6 +2,7 @@
 // Unified 2D/3D Google Maps & Flyover Widget  *
 //**********************************************
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:latlong2/latlong.dart';
 
@@ -295,6 +296,30 @@ class _GoogleMap3DWidgetState extends State<GoogleMap3DWidget>
                 );
               } else if (use3d && canFlyover && preset.id == 'initial') {
                 effectiveCenter3D = flyoverPts[flyoverPts.length ~/ 2];
+              }
+
+              if (kIsWeb) {
+                return GoogleMap3DPlatformView(
+                  key: const ValueKey('unified_web_gmap'),
+                  center: use3d ? effectiveCenter3D : preset.center,
+                  tilt: use3d ? tilt : 0,
+                  heading: use3d ? effectiveHeading3D : 0,
+                  mobileZoom: use3d
+                      ? (follow ? 17.2 : preset.mobileZoom)
+                      : widget.initialZoom,
+                  polylines: widget.polylines3D,
+                  markers: use3d ? markersWithFlyover : widget.markers3D,
+                  camera3DActive: use3d && (follow || _flyController.isAnimating),
+                  stylePreset: mapStyle,
+                  fitBounds: widget.fitBounds &&
+                      preset.id == 'initial' &&
+                      !(use3d && (follow || _flyController.isAnimating)),
+                  fitSignature: use3d
+                      ? '3d|${widget.fitSignature}'
+                      : widget.fitSignature,
+                  forceCenter: widget.forceCenter,
+                  onMarkerTap: widget.onMarkerTap,
+                );
               }
 
               return use3d

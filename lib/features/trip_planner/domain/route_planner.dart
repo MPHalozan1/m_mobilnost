@@ -29,13 +29,13 @@ export 'route_planner_models.dart';
 /// Provides the [RoutePlanner] wired to [LineRepository], [TimetableRepository],
 /// and Google Routes API v2 (`TRANSIT` + `DRIVE`/`WALK` road geometry).
 final routePlannerProvider = Provider<RoutePlanner>((ref) {
-  final liveFleet =
-      ref.watch(liveBusesStreamProvider).valueOrNull ?? const <BusPosition>[];
   return RoutePlanner(
     lineRepository: ref.watch(lineRepositoryProvider),
     timetableRepository: ref.watch(timetableRepositoryProvider),
     googleRoutesService: ref.watch(googleRoutesServiceProvider),
-    liveFleetProvider: () => liveFleet,
+    liveFleetProvider: () =>
+        ref.read(liveBusesStreamProvider).valueOrNull ??
+        ref.read(busSimulatorProvider).snapshotAt(DateTime.now()),
     isSimulatedLiveEnabled: () => ref.read(a11ySettingsProvider).useSimulatedLive,
     isOfflineCheck: () => ref.read(isOfflineProvider),
   );
@@ -129,41 +129,74 @@ class RoutePlanner {
     // 1. Primary path: Live Google Routes API v2 TRANSIT (BUS)
     final googleOptions = <TripOption>[];
     if (useLiveGoogleRoutes) {
-      final enrichedRoutes = await routesService.computePassengerTransitRoutes(
-        origin: origin,
-        destination: destination,
-        transitPreference: accessibleOnly
-            ? 'LESS_WALKING'
-            : (effectiveFewerTransfers ? 'FEWER_TRANSFERS' : 'LESS_WALKING'),
-        languageCode: localeCode,
-        // Never send departureTime on "Leave now" (Google rejects slightly-past timestamps)
-        departureTime: mode == TripTimeMode.departAt ? targetTime : null,
-        arrivalTime: mode == TripTimeMode.arriveBy ? targetTime : null,
-        marpromLinesByCode: marpromByCode,
-        marpromStops: allStops,
-        liveFleet: liveFleet,
-        originLabel: originLabel,
-        destinationLabel: destinationLabel,
-      );
-
-      for (final item in enrichedRoutes) {
-        googleOptions.add(item.option);
-      }
-
-      if (googleOptions.isNotEmpty) {
-        final filtered = MarpromRouteFusion.filterAccessibleOptions(
-          googleOptions,
-          wheelchairOnly: accessibleOnly,
-          localeCode: localeCode,
+      try {
+        final enrichedRoutes = await routesService.computePassengerTransitRoutes(
+          origin: origin,
+          destination: destination,
+          transitPreference: accessibleOnly
+              ? 'LESS_WALKING'
+              : (effectiveFewerTransfers ? 'FEWER_TRANSFERS' : 'LESS_WALKING'),
+          languageCode: localeCode,
+          // Never send departureTime on "Leave now" (Google rejects slightly-past timestamps)
+          departureTime: mode == TripTimeMode.departAt ? targetTime : null,
+          arrivalTime: mode == TripTimeMode.arriveBy ? targetTime : null,
+          marpromLinesByCode: marpromByCode,
+          marpromStops: allStops,
+          liveFleet: liveFleet,
+          originLabel: originLabel,
+          destinationLabel: destinationLabel,
         );
-        if (filtered.isNotEmpty) {
-          return _rankAndSelect(
-            filtered,
-            mode: mode,
-            fewerTransfers: effectiveFewerTransfers,
-            maxResults: maxResults,
-          );
+
+        for (final item in enrichedRoutes) {
+          googleOptions.add(item.option);
         }
+
+        if (googleOptions.isNotEmpty) {
+          final filtered = MarpromRouteFusion.filterAccessibleOptions(
+            googleOptions,
+            wheelchairOnly: accessibleOnly,
+            localeCode: localeCode,
+          );
+          if (filtered.isNotEmpty) {
+            final marpromCityOptions = filtered.where((opt) {
+              final busLegs = opt.legs.where((l) => l.type == TripLegType.bus);
+              return busLegs.isNotEmpty &&
+                  busLegs.every(
+                    (l) => l.lineId != null && linesById.containsKey(l.lineId),
+                  );
+            }).toList(growable: false);
+            if (marpromCityOptions.isNotEmpty &&
+                marpromCityOptions.length < filtered.length) {
+              final marpromSet = marpromCityOptions.toSet();
+              final nonCityOptions = filtered
+                  .where((opt) => !marpromSet.contains(opt))
+                  .toList(growable: false);
+              final rankedCity = _rankAndSelect(
+                marpromCityOptions,
+                mode: mode,
+                fewerTransfers: effectiveFewerTransfers,
+                maxResults: maxResults,
+              );
+              final rankedRest = _rankAndSelect(
+                nonCityOptions,
+                mode: mode,
+                fewerTransfers: effectiveFewerTransfers,
+                maxResults: maxResults,
+              );
+              return [...rankedCity, ...rankedRest]
+                  .take(maxResults)
+                  .toList(growable: false);
+            }
+            return _rankAndSelect(
+              filtered,
+              mode: mode,
+              fewerTransfers: effectiveFewerTransfers,
+              maxResults: maxResults,
+            );
+          }
+        }
+      } catch (_) {
+        // Fall through cleanly to Marprom schedule + Google Maps road/walk hydration
       }
     }
 
@@ -287,11 +320,13 @@ class RoutePlanner {
           final start = leg.polyline.first;
           final end = leg.polyline.last;
           if (GeoUtils.haversineMeters(start, end) > 25) {
-            final walkPoly = await routesService.computeWalkPolyline(start, end);
-            newLegs.add(
-              walkPoly.length >= 2 ? leg.copyWith(polyline: walkPoly) : leg,
-            );
-            continue;
+            try {
+              final walkPoly = await routesService.computeWalkPolyline(start, end);
+              newLegs.add(
+                walkPoly.length >= 2 ? leg.copyWith(polyline: walkPoly) : leg,
+              );
+              continue;
+            } catch (_) {}
           }
           newLegs.add(leg);
         } else if (leg.type == TripLegType.bus) {
@@ -306,25 +341,27 @@ class RoutePlanner {
                     seedStopsById[dir.stopIds[i]]?.position ??
                     dir.polyline[i],
             ];
-            final fullRoad = await routesService.computeBusLineRoadPath(
-              lineId: line.id,
-              orderedStops: ordered,
-              line: line,
-              cacheKey: '${line.id}|${dir.id}',
-            );
-            if (fullRoad.length >= 2) {
-              final boardPos = stopsById[leg.fromStopId]?.position ??
-                  (leg.polyline.isNotEmpty ? leg.polyline.first : fullRoad.first);
-              final alightPos = stopsById[leg.toStopId]?.position ??
-                  (leg.polyline.isNotEmpty ? leg.polyline.last : fullRoad.last);
-              final sliced = slicePolylineBetweenPoints(
-                fullRoad,
-                boardPos,
-                alightPos,
+            try {
+              final fullRoad = await routesService.computeBusLineRoadPath(
+                lineId: line.id,
+                orderedStops: ordered,
+                line: line,
+                cacheKey: '${line.id}|${dir.id}',
               );
-              newLegs.add(leg.copyWith(polyline: sliced));
-              continue;
-            }
+              if (fullRoad.length >= 2) {
+                final boardPos = stopsById[leg.fromStopId]?.position ??
+                    (leg.polyline.isNotEmpty ? leg.polyline.first : fullRoad.first);
+                final alightPos = stopsById[leg.toStopId]?.position ??
+                    (leg.polyline.isNotEmpty ? leg.polyline.last : fullRoad.last);
+                final sliced = slicePolylineBetweenPoints(
+                  fullRoad,
+                  boardPos,
+                  alightPos,
+                );
+                newLegs.add(leg.copyWith(polyline: sliced));
+                continue;
+              }
+            } catch (_) {}
           }
           newLegs.add(leg);
         } else {

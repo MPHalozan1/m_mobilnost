@@ -347,7 +347,15 @@ class GoogleRoutesService {
       final encoded = stored[effectiveKey] ?? stored[lineId];
       if (encoded != null && encoded.isNotEmpty) {
         final decoded = decodeEncodedPolyline(encoded);
-        if (decoded.length >= 2) {
+        final allInMaribor = decoded.length >= 2 &&
+            decoded.every(
+              (p) =>
+                  p.latitude >= 46.30 &&
+                  p.latitude <= 46.80 &&
+                  p.longitude >= 15.30 &&
+                  p.longitude <= 16.05,
+            );
+        if (allInMaribor) {
           _busLinePolylineCache[effectiveKey] = decoded;
           return decoded;
         }
@@ -683,7 +691,8 @@ class GoogleRoutesService {
     var prevLng = 0;
 
     void encodeValue(int value) {
-      var v = value < 0 ? ~(value << 1) : (value << 1);
+      // Pure arithmetic zigzag encoding (Dart2JS bitwise `~` is unsigned 32-bit).
+      var v = value < 0 ? ((-value) * 2 - 1) : (value * 2);
       while (v >= 0x20) {
         buffer.writeCharCode((0x20 | (v & 0x1f)) + 63);
         v >>= 5;

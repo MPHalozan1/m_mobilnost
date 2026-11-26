@@ -14,6 +14,8 @@ class Place {
     required this.address,
     required this.position,
     required this.nearestStopIds,
+    this.aliases = const [],
+    this.brandGroup,
   });
 
   /// Unique place identifier.
@@ -33,4 +35,12 @@ class Place {
 
   /// Nearest Marprom stop IDs serving this destination.
   final List<String> nearestStopIds;
+
+  /// Colloquial/Slovene/abbreviation aliases for smarter local & AI matching
+  /// (e.g. `['mc', 'mek', 'mekdonalds', 'mcdonalds']`).
+  final List<String> aliases;
+
+  /// Shared chain/brand group identifier when multiple branches exist in Maribor
+  /// (e.g. `'mcdonalds'`, `'hofer'`, `'lidl'`, `'spar'`).
+  final String? brandGroup;
 }

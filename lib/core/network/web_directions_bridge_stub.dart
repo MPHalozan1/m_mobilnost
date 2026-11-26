@@ -34,4 +34,11 @@ abstract final class WebDirectionsBridge {
     required LatLng destination,
   }) async =>
       null;
+
+  /// Returns null on non-Web targets.
+  static Future<List<Map<String, dynamic>>?> searchPlacesInMaribor({
+    required String query,
+    LatLng? userLocation,
+  }) async =>
+      null;
 }

@@ -159,6 +159,16 @@ class TripOptionCard extends StatelessWidget {
                 ],
               ),
             ],
+            if (isSelected) ...[
+              const SizedBox(height: 10),
+              _SelectedStepTimeline(
+                option: option,
+                linesById: linesById,
+                originLabel: originLabel,
+                destinationLabel: destinationLabel,
+                isSl: isSl,
+              ),
+            ],
             const SizedBox(height: 8),
             // Row 4: Single clean "Info / Podrobnosti" drawer trigger + optional 3D shortcut
             Wrap(
@@ -635,6 +645,153 @@ class _LegDetailCard extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _SelectedStepTimeline extends StatelessWidget {
+  const _SelectedStepTimeline({
+    required this.option,
+    required this.linesById,
+    required this.originLabel,
+    required this.destinationLabel,
+    required this.isSl,
+  });
+
+  final TripOption option;
+  final Map<String, BusLine> linesById;
+  final String originLabel;
+  final String destinationLabel;
+  final bool isSl;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final l10n = context.l10n;
+    return Container(
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: const Color(0xFF1A73E8).withValues(alpha: 0.28),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          for (var i = 0; i < option.legs.length; i++) ...[
+            if (i > 0) const SizedBox(height: 8),
+            _buildStepRow(context, scheme, l10n, option.legs[i]),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildStepRow(
+    BuildContext context,
+    ColorScheme scheme,
+    dynamic l10n,
+    TripLeg leg,
+  ) {
+    if (leg.type == TripLegType.walk) {
+      final dist = DistanceUtils.formatMeters(leg.distanceMeters, l10n);
+      final toName = leg.toName.trim().isNotEmpty ? leg.toName : destinationLabel;
+      final text = isSl
+          ? 'Peš $dist (${leg.durationMinutes} min) do $toName'
+          : 'Walk $dist (${leg.durationMinutes} min) to $toName';
+      return Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 24,
+            height: 24,
+            decoration: BoxDecoration(
+              color: const Color(0xFF1A73E8).withValues(alpha: 0.14),
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(
+              Icons.directions_walk_rounded,
+              size: 14,
+              color: Color(0xFF1A73E8),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.only(top: 3),
+              child: Text(
+                text,
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      fontWeight: FontWeight.w600,
+                      color: scheme.onSurface,
+                    ),
+              ),
+            ),
+          ),
+        ],
+      );
+    }
+
+    final lineColor = linesById[leg.lineId]?.color ?? MarpromColors.marpromRed;
+    final code = leg.lineCode ?? leg.lineId ?? 'BUS';
+    final startStr = TimeFormatUtils.formatTime24(leg.startTime);
+    final endStr = TimeFormatUtils.formatTime24(leg.endTime);
+    final dirSuffix =
+        leg.directionName != null && leg.directionName!.trim().isNotEmpty
+            ? ' → ${leg.directionName}'
+            : '';
+    final stopCount = leg.intermediateStopIds.length + 1;
+    final headline = isSl
+        ? 'Vstopi na postaji ${leg.fromName} ($startStr)'
+        : 'Board at ${leg.fromName} ($startStr)';
+    final subline = isSl
+        ? 'Izstopi na ${leg.toName} ($endStr) • $stopCount postaj (${leg.durationMinutes} min)'
+        : 'Get off at ${leg.toName} ($endStr) • $stopCount stops (${leg.durationMinutes} min)';
+
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+          decoration: BoxDecoration(
+            color: lineColor,
+            borderRadius: BorderRadius.circular(7),
+          ),
+          child: Text(
+            code,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 11.5,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '$headline$dirSuffix',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      fontWeight: FontWeight.w800,
+                      color: scheme.onSurface,
+                    ),
+              ),
+              const SizedBox(height: 1),
+              Text(
+                subline,
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: scheme.onSurfaceVariant,
+                      fontWeight: FontWeight.w500,
+                    ),
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 }

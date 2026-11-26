@@ -7,8 +7,13 @@ import 'dart:js_interop';
 
 import 'package:latlong2/latlong.dart';
 
+import '../maps/google_maps_config.dart';
+
 @JS('__marpromComputeJsDirections')
 external JSPromise<JSString>? _marpromComputeJsDirections(JSString payloadJson);
+
+@JS('__marpromSearchPlaces')
+external JSPromise<JSString>? _marpromSearchPlaces(JSString payloadJson);
 
 /// Calls `google.maps.DirectionsService` on Flutter Web as an automatic
 /// CORS/referrer-safe fallback whenever REST `routes.googleapis.com` fails.
@@ -26,6 +31,7 @@ abstract final class WebDirectionsBridge {
     DateTime? arrivalTime,
   }) async {
     final payload = <String, dynamic>{
+      'apiKey': GoogleMapsConfig.webApiKey,
       'mode': 'TRANSIT',
       'origin': {'lat': origin.latitude, 'lng': origin.longitude},
       'destination': {
@@ -57,6 +63,7 @@ abstract final class WebDirectionsBridge {
     List<LatLng> waypoints = const [],
   }) async {
     final payload = <String, dynamic>{
+      'apiKey': GoogleMapsConfig.webApiKey,
       'mode': 'DRIVING',
       'origin': {'lat': origin.latitude, 'lng': origin.longitude},
       'destination': {
@@ -79,6 +86,7 @@ abstract final class WebDirectionsBridge {
     required LatLng destination,
   }) async {
     final payload = <String, dynamic>{
+      'apiKey': GoogleMapsConfig.webApiKey,
       'mode': 'WALKING',
       'origin': {'lat': origin.latitude, 'lng': origin.longitude},
       'destination': {
@@ -89,6 +97,39 @@ abstract final class WebDirectionsBridge {
 
     final decoded = await _invoke(payload);
     return _extractFirstOverviewPath(decoded);
+  }
+
+  /// Searches real Maribor places/POIs via Google Maps JS Places library.
+  static Future<List<Map<String, dynamic>>?> searchPlacesInMaribor({
+    required String query,
+    LatLng? userLocation,
+  }) async {
+    try {
+      final payload = <String, dynamic>{
+        'apiKey': GoogleMapsConfig.webApiKey,
+        'query': query,
+        if (userLocation != null)
+          'userLocation': {
+            'lat': userLocation.latitude,
+            'lng': userLocation.longitude,
+          },
+      };
+      final promise = _marpromSearchPlaces(jsonEncode(payload).toJS);
+      if (promise == null) return null;
+      final jsResult = await promise.toDart;
+      final raw = jsResult.toDart;
+      if (raw.isEmpty) return null;
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) return null;
+      final rawPlaces = decoded['places'];
+      if (rawPlaces is! List) return null;
+      return [
+        for (final p in rawPlaces)
+          if (p is Map) Map<String, dynamic>.from(p),
+      ];
+    } catch (_) {
+      return null;
+    }
   }
 
   static Future<Map<String, dynamic>?> _invoke(

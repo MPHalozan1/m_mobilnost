@@ -397,8 +397,10 @@ void _syncHostWithGoogleJs({
           {
             'id': line.id,
             'color': toHex(line.color),
+            if (line.casingColor != null) 'casingColor': toHex(line.casingColor!),
             'strokeWidth': line.strokeWidth,
             'isDashed': line.isDashed,
+            'zIndex': line.zIndex,
             'points': [
               for (final pt in line.points)
                 {'lat': pt.latitude, 'lng': pt.longitude},
@@ -406,13 +408,14 @@ void _syncHostWithGoogleJs({
           },
     ],
     'markers': [
-      for (final mk in markers.take(100))
+      for (final mk in markers.take(220))
         {
           'id': mk.id,
           'lat': mk.position.latitude,
           'lng': mk.position.longitude,
           'label': mk.label,
           'shortLabel': mk.shortLabel,
+          if (mk.badgeNumber != null) 'badgeNumber': mk.badgeNumber,
           'isBus': mk.isBus,
           'isUserLocation': mk.isUserLocation,
           'isSelected': mk.isSelected,

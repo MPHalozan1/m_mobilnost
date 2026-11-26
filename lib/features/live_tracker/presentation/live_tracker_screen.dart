@@ -200,7 +200,10 @@ class _LiveTrackerScreenState extends ConsumerState<LiveTrackerScreen> {
                 (_showRoutePolyline.value || _use3DView.value)) {
               final line = linesMap[focusedBus.lineId];
               final key = '${focusedBus.lineId}|${focusedBus.directionId}';
-              final googleRoad = googleRoutesMap[key]?.polylinePoints;
+              final dir = line?.directionById(focusedBus.directionId);
+              final googleRoad = googleRoutesMap[key]?.polylinePoints ??
+                  dir?.roadPolyline ??
+                  dir?.routePolyline;
               if (googleRoad != null && googleRoad.length >= 2) {
                 mapPolylines.add(
                   GoogleMap3DPolylineData(
@@ -241,7 +244,7 @@ class _LiveTrackerScreenState extends ConsumerState<LiveTrackerScreen> {
             ];
 
             final mapView = GoogleMap3DWidget(
-              key: ValueKey('all_buses_map_${_use3DView.value}'),
+              key: const Key('all_buses_map'),
               initialCenter:
                   focusedBus?.position ?? userPos ?? GeoUtils.mariborCenter,
               initialZoom: 13.4,

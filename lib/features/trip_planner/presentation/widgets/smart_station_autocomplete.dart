@@ -118,12 +118,18 @@ List<StationSearchEntry> filterAndSortStationEntries({
   for (final place in places) {
     final normName = normalizeSlovenianSearch(place.name);
     final normAddr = normalizeSlovenianSearch(place.address);
+    final normAliases = [
+      for (final a in place.aliases) normalizeSlovenianSearch(a),
+    ];
     var tier = 2;
     if (q.isEmpty) {
       tier = 1;
-    } else if (normName.startsWith(q)) {
+    } else if (normName.startsWith(q) ||
+        normAliases.any((a) => a.startsWith(q))) {
       tier = 0;
-    } else if (normName.contains(q) || normAddr.contains(q)) {
+    } else if (normName.contains(q) ||
+        normAddr.contains(q) ||
+        normAliases.any((a) => a.contains(q))) {
       tier = 1;
     } else {
       continue;

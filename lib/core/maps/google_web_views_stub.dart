@@ -26,6 +26,9 @@ class _CompactTransitBitmaps {
 
   static String keyFor(GoogleMap3DMarkerData m) {
     if (m.isUserLocation) return 'user_gps';
+    if (m.badgeNumber != null && m.badgeNumber!.isNotEmpty) {
+      return 'badge|${m.badgeNumber}|${m.color.toARGB32()}';
+    }
     if (m.isBus) {
       final code = (m.shortLabel ?? m.label.split(' ').first).toUpperCase();
       final ring = (m.statusColor ?? Colors.white).toARGB32();
@@ -54,10 +57,28 @@ class _CompactTransitBitmaps {
       canvas.drawCircle(
         center,
         22,
-        Paint()..color = const Color(0xFF38BDF8).withValues(alpha: 0.25),
+        Paint()..color = const Color(0xFF4285F4).withValues(alpha: 0.25),
       );
       canvas.drawCircle(center, 13, Paint()..color = Colors.white);
-      canvas.drawCircle(center, 9.5, Paint()..color = const Color(0xFF0284C7));
+      canvas.drawCircle(center, 9.5, Paint()..color = const Color(0xFF1A73E8));
+    } else if (m.badgeNumber != null && m.badgeNumber!.isNotEmpty) {
+      width = 56;
+      height = 56;
+      const center = Offset(28, 28);
+      canvas.drawCircle(center, 22, Paint()..color = Colors.white);
+      canvas.drawCircle(center, 19, Paint()..color = m.color);
+      final tp = TextPainter(
+        text: TextSpan(
+          text: m.badgeNumber!,
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 20,
+            fontWeight: FontWeight.w900,
+          ),
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      tp.paint(canvas, Offset((width - tp.width) / 2, (height - tp.height) / 2));
     } else if (m.isBus) {
       width = 96;
       height = 60;
@@ -148,14 +169,14 @@ Set<gmaps.Polyline> _buildMobilePolylines(
       result.add(
         gmaps.Polyline(
           polylineId: gmaps.PolylineId(line.id),
-          color: const Color(0xFF3B82F6),
-          width: kIsWeb ? 4 : 5,
-          zIndex: 4,
+          color: line.color == Colors.transparent ? kGoogleMapsWalkBlue : line.color,
+          width: kIsWeb ? 5 : 6,
+          zIndex: line.zIndex + 2,
           geodesic: false,
           patterns: kIsWeb
               ? const <gmaps.PatternItem>[]
               : <gmaps.PatternItem>[
-                  gmaps.PatternItem.dash(14),
+                  gmaps.PatternItem.dot,
                   gmaps.PatternItem.gap(10),
                 ],
           points: gPoints,
@@ -165,9 +186,9 @@ Set<gmaps.Polyline> _buildMobilePolylines(
       result.add(
         gmaps.Polyline(
           polylineId: gmaps.PolylineId('${line.id}_casing'),
-          color: Colors.white.withValues(alpha: 0.94),
+          color: line.casingColor ?? Colors.white.withValues(alpha: 0.94),
           width: w + 3,
-          zIndex: 1,
+          zIndex: line.zIndex > 1 ? line.zIndex - 1 : 1,
           geodesic: false,
           jointType: gmaps.JointType.round,
           startCap: gmaps.Cap.roundCap,
@@ -180,7 +201,7 @@ Set<gmaps.Polyline> _buildMobilePolylines(
           polylineId: gmaps.PolylineId(line.id),
           color: line.color,
           width: w,
-          zIndex: 2,
+          zIndex: line.zIndex,
           geodesic: false,
           jointType: gmaps.JointType.round,
           startCap: gmaps.Cap.roundCap,

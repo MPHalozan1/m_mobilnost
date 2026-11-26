@@ -232,6 +232,8 @@
   <!-- Dynamic Google Maps JavaScript SDK Loader (key injected securely at runtime from Dart) -->
   <script>
     window.__marpromMapsSdkRequested = false;
+    window.__marpromCoreLibsPromise = null;
+    window.__marpromIconCache = new window.Map();
 
     window.__marpromEnsureGoogleMaps = function(apiKey) {
       if (window.google && window.google.maps && window.google.maps.importLibrary) {
@@ -246,7 +248,7 @@
       script.defer = true;
       script.src = 'https://maps.googleapis.com/maps/api/js?key=' +
         encodeURIComponent(apiKey) +
-        '&v=weekly&libraries=maps,marker,geometry,routes&loading=async';
+        '&v=weekly&libraries=maps,marker,geometry,routes,places&loading=async';
       document.head.appendChild(script);
     };
 
@@ -261,18 +263,42 @@
       return false;
     };
 
+    window.__marpromEnsureCoreLibs = async function() {
+      const ready = await window.__marpromWaitForGoogleMaps();
+      if (!ready) return null;
+      if (!window.__marpromCoreLibsPromise) {
+        window.__marpromCoreLibsPromise = Promise.all([
+          window.google.maps.importLibrary('core'),
+          window.google.maps.importLibrary('maps'),
+          window.google.maps.importLibrary('marker'),
+        ]).then(function(libs) {
+          return { core: libs[0], maps: libs[1], marker: libs[2] };
+        }).catch(function(err) {
+          window.__marpromCoreLibsPromise = null;
+          throw err;
+        });
+      }
+      return window.__marpromCoreLibsPromise;
+    };
+
     //**********************************************
-    // Web JS DirectionsService Fallback           *
+    // Web JS DirectionsService & Places Bridges   *
     // Eliminates browser CORS/referer 403 errors  *
     //**********************************************
     window.__marpromComputeJsDirections = async function(payloadJson) {
       try {
         const req = JSON.parse(payloadJson || '{}');
+        if (req.apiKey) {
+          window.__marpromEnsureGoogleMaps(req.apiKey);
+        }
         const ready = await window.__marpromWaitForGoogleMaps();
         if (!ready) {
           return JSON.stringify({ status: 'MAPS_NOT_READY', routes: [] });
         }
-        await window.google.maps.importLibrary('routes');
+        await Promise.all([
+          window.google.maps.importLibrary('core'),
+          window.google.maps.importLibrary('routes'),
+        ]);
         const svc = new window.google.maps.DirectionsService();
 
         const mode = req.mode || 'TRANSIT';
@@ -387,6 +413,101 @@
       }
     };
 
+    window.__marpromSearchPlaces = async function(payloadJson) {
+      try {
+        const req = JSON.parse(payloadJson || '{}');
+        if (req.apiKey) {
+          window.__marpromEnsureGoogleMaps(req.apiKey);
+        }
+        const ready = await window.__marpromWaitForGoogleMaps();
+        if (!ready) {
+          return JSON.stringify({ status: 'MAPS_NOT_READY', places: [] });
+        }
+        await Promise.all([
+          window.google.maps.importLibrary('core'),
+          window.google.maps.importLibrary('maps'),
+          window.google.maps.importLibrary('places'),
+        ]);
+        const query = String(req.query || '').trim();
+        if (!query) {
+          return JSON.stringify({ status: 'EMPTY', places: [] });
+        }
+        const searchQuery = query.toLowerCase().includes('maribor')
+          ? query
+          : query + ' Maribor, Slovenia';
+        const inMaribor = function(lat, lng) {
+          return typeof lat === 'number' && typeof lng === 'number' &&
+            lat >= 46.45 && lat <= 46.65 && lng >= 15.50 && lng <= 15.80;
+        };
+
+        if (window.google.maps.places && window.google.maps.places.Place &&
+            typeof window.google.maps.places.Place.searchByText === 'function') {
+          const resp = await window.google.maps.places.Place.searchByText({
+            textQuery: searchQuery,
+            fields: ['id', 'displayName', 'formattedAddress', 'location'],
+            locationRestriction: {
+              south: 46.45,
+              north: 46.65,
+              west: 15.50,
+              east: 15.80,
+            },
+            maxResultCount: 8,
+            language: 'sl',
+          });
+          const rawPlaces = (resp && Array.isArray(resp.places)) ? resp.places : [];
+          const out = [];
+          for (const p of rawPlaces) {
+            const loc = p.location;
+            const lat = loc ? (typeof loc.lat === 'function' ? loc.lat() : loc.lat) : null;
+            const lng = loc ? (typeof loc.lng === 'function' ? loc.lng() : loc.lng) : null;
+            if (!inMaribor(lat, lng)) continue;
+            out.push({
+              id: p.id || ('gplace_' + out.length),
+              name: p.displayName || query,
+              address: p.formattedAddress || 'Maribor',
+              lat: lat,
+              lng: lng,
+            });
+          }
+          if (out.length > 0) {
+            return JSON.stringify({ status: 'OK', places: out });
+          }
+        }
+
+        if (window.google.maps.places && window.google.maps.places.PlacesService) {
+          const svc = new window.google.maps.places.PlacesService(document.createElement('div'));
+          const bounds = new window.google.maps.LatLngBounds(
+            { lat: 46.45, lng: 15.50 },
+            { lat: 46.65, lng: 15.80 }
+          );
+          const legacyRes = await new Promise(function(resolve) {
+            svc.textSearch({ query: searchQuery, bounds: bounds }, function(results, status) {
+              resolve({ results: results || [], status: String(status || 'ERROR') });
+            });
+          });
+          const out = [];
+          for (const p of legacyRes.results) {
+            const loc = p.geometry && p.geometry.location;
+            const lat = loc ? loc.lat() : null;
+            const lng = loc ? loc.lng() : null;
+            if (!inMaribor(lat, lng)) continue;
+            out.push({
+              id: p.place_id || ('gplace_' + out.length),
+              name: p.name || query,
+              address: p.formatted_address || 'Maribor',
+              lat: lat,
+              lng: lng,
+            });
+          }
+          return JSON.stringify({ status: legacyRes.status, places: out });
+        }
+
+        return JSON.stringify({ status: 'UNAVAILABLE', places: [] });
+      } catch (e) {
+        return JSON.stringify({ status: 'EXCEPTION', error: String(e), places: [] });
+      }
+    };
+
     // Maribor service area: points outside it (e.g. 0,0 placeholders) are
     // never used for camera framing.
     window.__marpromFitArea = { south: 46.30, north: 46.80, west: 15.30, east: 16.05 };
@@ -402,7 +523,7 @@
     }
 
     function marpromHostSized(hostEl) {
-      return hostEl.isConnected && hostEl.clientWidth >= 80 && hostEl.clientHeight >= 80;
+      return !!hostEl && hostEl.clientWidth >= 80 && hostEl.clientHeight >= 80;
     }
 
     function marpromApplyFit(st, hostEl, fit) {
@@ -423,7 +544,6 @@
       }
       st.pendingFit = null;
       st.lastFitSig = fit.sig;
-      google.maps.event.trigger(st.map, 'resize');
       requestAnimationFrame(function() {
         if (st.lastFitSig !== fit.sig) return;
         if (fit.count === 1) {
@@ -431,45 +551,78 @@
           st.map.setZoom(15.5);
         } else {
           const minSide = Math.min(hostEl.clientWidth, hostEl.clientHeight);
-          const pad = Math.max(24, Math.min(56, Math.round(minSide * 0.08)));
+          const pad = Math.max(28, Math.min(64, Math.round(minSide * 0.10)));
           st.map.fitBounds(fit.bounds, pad);
         }
         google.maps.event.addListenerOnce(st.map, 'idle', function() {
           const z = st.map.getZoom();
           if (typeof z === 'number' && z > 16.2) st.map.setZoom(16.2);
           if (typeof z === 'number' && z < 11.2) st.map.setZoom(11.2);
-          if (fit.tilt > 0 && typeof st.map.setTilt === 'function') st.map.setTilt(fit.tilt);
-          if (fit.tilt > 0 && typeof st.map.setHeading === 'function') st.map.setHeading(fit.heading || 0);
+          if (fit.tilt > 0 && typeof st.map.setTilt === 'function' && Math.abs(st.lastTilt - fit.tilt) > 0.2) {
+            st.map.setTilt(fit.tilt);
+            st.lastTilt = fit.tilt;
+          }
+          if (fit.tilt > 0 && typeof st.map.setHeading === 'function' && Math.abs(st.lastHeading - (fit.heading || 0)) > 0.5) {
+            st.map.setHeading(fit.heading || 0);
+            st.lastHeading = fit.heading || 0;
+          }
         });
       });
     }
 
-    function marpromBuildMarkerIcon(mk) {
+    function marpromMarkerSig(mk) {
+      const headingBucket = mk.isBus ? Math.round((mk.headingDegrees || 0) / 15) * 15 : '';
+      const occBucket = typeof mk.occupancyPercent === 'number'
+        ? Math.round(Math.max(0, Math.min(100, mk.occupancyPercent)) / 5) * 5
+        : '';
+      return [
+        mk.shortLabel || '',
+        mk.badgeNumber || '',
+        mk.color || '',
+        mk.statusColor || '',
+        occBucket,
+        mk.occupancyColor || '',
+        mk.isUserLocation ? '1' : '0',
+        headingBucket,
+        mk.isSelected ? '1' : '0',
+      ].join('|');
+    }
+
+    function marpromBuildMarkerHtml(mk, sig) {
+      const cached = sig ? window.__marpromIconCache.get('html:' + sig) : null;
+      if (cached) return cached;
+
+      let html;
       if (mk.isUserLocation) {
         const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">' +
-          '<circle cx="16" cy="16" r="14" fill="#38BDF8" fill-opacity="0.24"/>' +
-          '<circle cx="16" cy="16" r="8" fill="#0284C7" stroke="#FFFFFF" stroke-width="3"/>' +
+          '<circle cx="16" cy="16" r="14" fill="#4285F4" fill-opacity="0.22"/>' +
+          '<circle cx="16" cy="16" r="7.5" fill="#1A73E8" stroke="#FFFFFF" stroke-width="3"/>' +
           '</svg>';
-        return {
-          url: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(svg),
-          scaledSize: new google.maps.Size(32, 32),
-          anchor: new google.maps.Point(16, 16),
-        };
-      }
-
-      if (mk.isBus) {
+        html = '<div style="position:relative;width:0;height:0;pointer-events:auto;cursor:pointer;">' +
+          '<div style="position:absolute;left:0;top:0;transform:translate(-50%,-50%);">' + svg + '</div></div>';
+      } else if (mk.badgeNumber) {
+        const num = String(mk.badgeNumber).replace(/&/g, '&amp;').replace(/</g, '&lt;').substring(0, 2);
+        const bg = mk.color || '#EA4335';
+        const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="34" height="42" viewBox="0 0 34 42">' +
+          '<path d="M17 1C8.7 1 2 7.7 2 16c0 10.5 15 24 15 24s15-13.5 15-24C32 7.7 25.3 1 17 1z" fill="' + bg + '" stroke="#FFFFFF" stroke-width="2.2"/>' +
+          '<text x="17" y="20" font-family="Arial,sans-serif" font-size="14" font-weight="900" fill="#FFFFFF" text-anchor="middle">' + num + '</text>' +
+          '</svg>';
+        html = '<div style="cursor:pointer;line-height:0;filter:drop-shadow(0 2px 4px rgba(0,0,0,0.35));">' + svg + '</div>';
+      } else if (mk.isBus) {
         const rawCode = (mk.shortLabel || (mk.label || '').split(' ')[0] || 'BUS').substring(0, 4);
         const safeCode = rawCode.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
         const bg = mk.color || '#C8102E';
         const ringColor = /^#[0-9a-fA-F]{6}$/.test(mk.statusColor || '') ? mk.statusColor : '#FFFFFF';
         const hasOcc = typeof mk.occupancyPercent === 'number';
-        const occPct = hasOcc ? Math.max(0, Math.min(100, mk.occupancyPercent)) : 0;
+        const occPct = hasOcc ? Math.round(Math.max(0, Math.min(100, mk.occupancyPercent)) / 5) * 5 : 0;
         const occColor = /^#[0-9a-fA-F]{6}$/.test(mk.occupancyColor || '') ? mk.occupancyColor : '#22C55E';
-        const heading = typeof mk.headingDegrees === 'number' ? mk.headingDegrees : 0;
+        const heading = typeof mk.headingDegrees === 'number'
+          ? Math.round(mk.headingDegrees / 15) * 15
+          : 0;
         const w = 52;
         const h = 44;
         const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '">' +
-          '<g transform="rotate(' + heading.toFixed(0) + ' 26 9)">' +
+          '<g transform="rotate(' + heading + ' 26 9)">' +
           '<polygon points="26,2 32,12 20,12" fill="' + bg + '" stroke="#FFFFFF" stroke-width="1.5"/>' +
           '</g>' +
           '<rect x="5" y="11" width="42" height="22" rx="8" fill="' + bg + '" stroke="' + ringColor + '" stroke-width="2.4"/>' +
@@ -479,34 +632,107 @@
               '<rect x="9.5" y="36.5" width="' + Math.max(occPct > 0 ? 2 : 0, (33 * occPct / 100)).toFixed(1) + '" height="3" rx="1.5" fill="' + occColor + '"/>'
             : '') +
           '</svg>';
-        return {
+        html = '<div style="position:relative;width:0;height:0;pointer-events:auto;cursor:pointer;">' +
+          '<div style="position:absolute;left:0;top:0;transform:translate(-50%,-50%);filter:drop-shadow(0 2px 4px rgba(0,0,0,0.3));">' + svg + '</div></div>';
+      } else {
+        const size = mk.isSelected ? 16 : 12;
+        const stroke = mk.color || '#1A73E8';
+        const r = mk.isSelected ? 5.5 : 4.2;
+        const sw = mk.isSelected ? 3.2 : 2.4;
+        const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + size + '" height="' + size + '" viewBox="0 0 ' + size + ' ' + size + '">' +
+          '<circle cx="' + (size / 2) + '" cy="' + (size / 2) + '" r="' + r + '" fill="#FFFFFF" stroke="' + stroke + '" stroke-width="' + sw + '"/>' +
+          '</svg>';
+        html = '<div style="position:relative;width:0;height:0;pointer-events:auto;cursor:pointer;">' +
+          '<div style="position:absolute;left:0;top:0;transform:translate(-50%,-50%);">' + svg + '</div></div>';
+      }
+
+      if (sig) {
+        if (window.__marpromIconCache.size >= 500) {
+          window.__marpromIconCache.clear();
+        }
+        window.__marpromIconCache.set('html:' + sig, html);
+      }
+      return html;
+    }
+
+    function marpromBuildMarkerIcon(mk, sig, libs) {
+      const cached = sig ? window.__marpromIconCache.get(sig) : null;
+      if (cached) return cached;
+
+      const GoogleSize = (libs && libs.core && libs.core.Size) || google.maps.Size;
+      const GooglePoint = (libs && libs.core && libs.core.Point) || google.maps.Point;
+      const GoogleSymbolPath = (libs && libs.core && libs.core.SymbolPath) || google.maps.SymbolPath;
+
+      let icon;
+      if (mk.isUserLocation) {
+        const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">' +
+          '<circle cx="16" cy="16" r="14" fill="#4285F4" fill-opacity="0.22"/>' +
+          '<circle cx="16" cy="16" r="7.5" fill="#1A73E8" stroke="#FFFFFF" stroke-width="3"/>' +
+          '</svg>';
+        icon = {
           url: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(svg),
-          scaledSize: new google.maps.Size(w, h),
-          anchor: new google.maps.Point(26, 22),
+          scaledSize: new GoogleSize(32, 32),
+          anchor: new GooglePoint(16, 16),
+        };
+      } else if (mk.badgeNumber) {
+        const num = String(mk.badgeNumber).replace(/&/g, '&amp;').replace(/</g, '&lt;').substring(0, 2);
+        const bg = mk.color || '#EA4335';
+        const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="34" height="42" viewBox="0 0 34 42">' +
+          '<path d="M17 1C8.7 1 2 7.7 2 16c0 10.5 15 24 15 24s15-13.5 15-24C32 7.7 25.3 1 17 1z" fill="' + bg + '" stroke="#FFFFFF" stroke-width="2.2"/>' +
+          '<text x="17" y="20" font-family="Arial,sans-serif" font-size="14" font-weight="900" fill="#FFFFFF" text-anchor="middle">' + num + '</text>' +
+          '</svg>';
+        icon = {
+          url: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(svg),
+          scaledSize: new GoogleSize(34, 42),
+          anchor: new GooglePoint(17, 40),
+        };
+      } else if (mk.isBus) {
+        const rawCode = (mk.shortLabel || (mk.label || '').split(' ')[0] || 'BUS').substring(0, 4);
+        const safeCode = rawCode.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        const bg = mk.color || '#C8102E';
+        const ringColor = /^#[0-9a-fA-F]{6}$/.test(mk.statusColor || '') ? mk.statusColor : '#FFFFFF';
+        const hasOcc = typeof mk.occupancyPercent === 'number';
+        const occPct = hasOcc ? Math.round(Math.max(0, Math.min(100, mk.occupancyPercent)) / 5) * 5 : 0;
+        const occColor = /^#[0-9a-fA-F]{6}$/.test(mk.occupancyColor || '') ? mk.occupancyColor : '#22C55E';
+        const heading = typeof mk.headingDegrees === 'number'
+          ? Math.round(mk.headingDegrees / 15) * 15
+          : 0;
+        const w = 52;
+        const h = 44;
+        const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '">' +
+          '<g transform="rotate(' + heading + ' 26 9)">' +
+          '<polygon points="26,2 32,12 20,12" fill="' + bg + '" stroke="#FFFFFF" stroke-width="1.5"/>' +
+          '</g>' +
+          '<rect x="5" y="11" width="42" height="22" rx="8" fill="' + bg + '" stroke="' + ringColor + '" stroke-width="2.4"/>' +
+          '<text x="26" y="26" font-family="Arial,sans-serif" font-size="11" font-weight="800" fill="#FFFFFF" text-anchor="middle">' + safeCode + '</text>' +
+          (hasOcc
+            ? '<rect x="8" y="35" width="36" height="6" rx="3" fill="#0F172A" stroke="#FFFFFF" stroke-width="1"/>' +
+              '<rect x="9.5" y="36.5" width="' + Math.max(occPct > 0 ? 2 : 0, (33 * occPct / 100)).toFixed(1) + '" height="3" rx="1.5" fill="' + occColor + '"/>'
+            : '') +
+          '</svg>';
+        icon = {
+          url: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(svg),
+          scaledSize: new GoogleSize(w, h),
+          anchor: new GooglePoint(26, 22),
+        };
+      } else {
+        icon = {
+          path: GoogleSymbolPath.CIRCLE,
+          scale: mk.isSelected ? 7.5 : 5.5,
+          fillColor: '#FFFFFF',
+          fillOpacity: 1.0,
+          strokeColor: mk.color || '#1A73E8',
+          strokeWeight: mk.isSelected ? 3.5 : 2.6,
         };
       }
 
-      return {
-        path: google.maps.SymbolPath.CIRCLE,
-        scale: mk.isSelected ? 7.5 : 5.5,
-        fillColor: '#FFFFFF',
-        fillOpacity: 1.0,
-        strokeColor: mk.color || '#C8102E',
-        strokeWeight: mk.isSelected ? 3.5 : 2.6,
-      };
-    }
-
-    function marpromMarkerSig(mk) {
-      return [
-        mk.shortLabel || '',
-        mk.color || '',
-        mk.statusColor || '',
-        mk.occupancyPercent ?? '',
-        mk.occupancyColor || '',
-        mk.isUserLocation ? '1' : '0',
-        mk.isBus ? Math.round((mk.headingDegrees || 0) / 10) : '',
-        mk.isSelected ? '1' : '0',
-      ].join('|');
+      if (sig) {
+        if (window.__marpromIconCache.size >= 500) {
+          window.__marpromIconCache.clear();
+        }
+        window.__marpromIconCache.set(sig, icon);
+      }
+      return icon;
     }
 
     window.__marpromSyncGoogleMap = function(hostEl, payloadJson) {
@@ -540,23 +766,33 @@
         if (payload.apiKey) {
           window.__marpromEnsureGoogleMaps(payload.apiKey);
         }
-        const ready = await window.__marpromWaitForGoogleMaps();
-        if (!ready) return;
-        const { Map, InfoWindow } = await window.google.maps.importLibrary('maps');
+        const libs = await window.__marpromEnsureCoreLibs();
+        if (!libs) return;
+
+        // Explicitly avoid shadowing JS built-in global `Map` or `Set`.
+        const GoogleMap = libs.maps.Map;
+        const GoogleInfoWindow = libs.maps.InfoWindow;
+        const GooglePolyline = libs.maps.Polyline || google.maps.Polyline;
+        const GoogleLatLngBounds = (libs.core && libs.core.LatLngBounds) || google.maps.LatLngBounds;
+        const GoogleSymbolPath = (libs.core && libs.core.SymbolPath) || google.maps.SymbolPath;
+        const GoogleAdvancedMarker = libs.marker && libs.marker.AdvancedMarkerElement;
+        const GoogleLegacyMarker = (libs.marker && libs.marker.Marker) || google.maps.Marker;
 
         const targetScheme = 'LIGHT';
         if (!hostEl.__marpromState) {
           const cs = google.maps.ColorScheme
             ? google.maps.ColorScheme.LIGHT
             : undefined;
+          const initTilt = Number(payload.tilt) || 0;
+          const initHeading = Number(payload.heading) || 0;
           const mapOptions = {
             center: marpromSafeCenter(payload.center),
             zoom: payload.zoom || 13.6,
             mapId: payload.mapId || 'DEMO_MAP_ID',
             renderingType: google.maps.RenderingType ? google.maps.RenderingType.VECTOR : undefined,
             colorScheme: cs,
-            tilt: payload.tilt || 0,
-            heading: payload.heading || 0,
+            tilt: initTilt,
+            heading: initHeading,
             tiltInteractionEnabled: true,
             headingInteractionEnabled: true,
             mapTypeId: 'roadmap',
@@ -568,24 +804,39 @@
             gestureHandling: 'greedy',
             scrollwheel: true,
           };
-          const map = new Map(hostEl, mapOptions);
+          const map = new GoogleMap(hostEl, mapOptions);
           const state = {
             map: map,
             colorScheme: targetScheme,
             polylines: [],
             lastPolySig: '',
-            markerMap: new Map(),
-            infoWindow: new InfoWindow(),
+            markerMap: new window.Map(),
+            infoWindow: new GoogleInfoWindow(),
             lastCenterSig: '',
             lastFitSig: '',
             pendingFit: null,
+            deferredPayload: null,
+            lastTilt: initTilt,
+            lastHeading: initHeading,
+            lastZoom: Number(payload.zoom) || 13.6,
+            lastWidth: hostEl.clientWidth || 0,
+            lastHeight: hostEl.clientHeight || 0,
           };
 
           if (typeof ResizeObserver !== 'undefined') {
             const ro = new ResizeObserver(function() {
               if (!marpromHostSized(hostEl)) return;
+              const w = hostEl.clientWidth;
+              const h = hostEl.clientHeight;
+              if (Math.abs(w - state.lastWidth) < 2 && Math.abs(h - state.lastHeight) < 2) {
+                return;
+              }
+              state.lastWidth = w;
+              state.lastHeight = h;
               google.maps.event.trigger(state.map, 'resize');
-              if (state.pendingFit) marpromApplyFit(state, hostEl, state.pendingFit);
+              if (state.pendingFit) {
+                marpromApplyFit(state, hostEl, state.pendingFit);
+              }
             });
             ro.observe(hostEl);
             state.resizeObserver = ro;
@@ -594,41 +845,61 @@
         }
 
         const st = hostEl.__marpromState;
+        st.deferredPayload = null;
         if (st.map.getMapTypeId() !== 'roadmap') {
           st.map.setMapTypeId('roadmap');
         }
 
+        const targetTilt = Number(payload.tilt) || 0;
+        const targetHeading = Number(payload.heading) || 0;
         if (payload.camera3D && payload.camera3D.active) {
           const cam = payload.camera3D;
           st.pendingFit = null;
+          const camTilt = typeof cam.tilt === 'number' ? cam.tilt : 60;
+          const camHeading = typeof cam.heading === 'number' ? cam.heading : 0;
+          const camZoom = cam.zoom || 17.2;
           if (typeof st.map.moveCamera === 'function') {
             st.map.moveCamera({
               center: marpromSafeCenter({ lat: cam.lat, lng: cam.lng }),
-              zoom: cam.zoom || 17.2,
-              tilt: typeof cam.tilt === 'number' ? cam.tilt : 60,
-              heading: typeof cam.heading === 'number' ? cam.heading : 0,
+              zoom: camZoom,
+              tilt: camTilt,
+              heading: camHeading,
             });
           } else {
             st.map.setCenter(marpromSafeCenter({ lat: cam.lat, lng: cam.lng }));
-            st.map.setZoom(cam.zoom || 17.2);
-            st.map.setTilt(typeof cam.tilt === 'number' ? cam.tilt : 60);
-            st.map.setHeading(typeof cam.heading === 'number' ? cam.heading : 0);
+            st.map.setZoom(camZoom);
+            if (typeof st.map.setTilt === 'function') st.map.setTilt(camTilt);
+            if (typeof st.map.setHeading === 'function') st.map.setHeading(camHeading);
           }
+          st.lastTilt = camTilt;
+          st.lastHeading = camHeading;
+          st.lastZoom = camZoom;
         } else {
-          if (typeof st.map.getTilt === 'function' && st.map.getTilt() !== (payload.tilt || 0)) {
-            st.map.setTilt(payload.tilt || 0);
+          if (typeof st.map.setTilt === 'function' && Math.abs(st.lastTilt - targetTilt) > 0.2) {
+            st.map.setTilt(targetTilt);
+            st.lastTilt = targetTilt;
           }
-          if (typeof st.map.getHeading === 'function' && st.map.getHeading() !== (payload.heading || 0)) {
-            st.map.setHeading(payload.heading || 0);
+          if (typeof st.map.setHeading === 'function' && Math.abs(st.lastHeading - targetHeading) > 0.5) {
+            st.map.setHeading(targetHeading);
+            st.lastHeading = targetHeading;
+          }
+          if (targetTilt === 0 && st.lastZoom >= 16.5 && payload.zoom && !payload.fitBounds) {
+            st.map.setZoom(payload.zoom);
+            st.lastZoom = payload.zoom;
           }
         }
 
         // Compute bounds and update polylines only when polyline signature changed
-        const routeBounds = new google.maps.LatLngBounds();
+        const routeBounds = new GoogleLatLngBounds();
         let routePointCount = 0;
         const polyList = payload.polylines || [];
         const polySig = JSON.stringify(polyList.map(function(l) {
-          return l.id + ':' + (l.isDashed ? '1' : '0') + ':' + (l.strokeWidth || 5) + ':' + (l.points ? l.points.length : 0);
+          const pts = l.points || [];
+          const p0 = pts.length > 0 ? (pts[0].lat.toFixed(5) + ',' + pts[0].lng.toFixed(5)) : '';
+          const pN = pts.length > 1 ? (pts[pts.length - 1].lat.toFixed(5) + ',' + pts[pts.length - 1].lng.toFixed(5)) : '';
+          return l.id + ':' + (l.color || '') + ':' + (l.casingColor || '') + ':' +
+            (l.zIndex || 2) + ':' + (l.isDashed ? '1' : '0') + ':' + (l.strokeWidth || 5) + ':' +
+            pts.length + ':' + p0 + ':' + pN;
         }));
 
         for (const line of polyList) {
@@ -647,45 +918,48 @@
           st.lastPolySig = polySig;
 
           for (const line of polyList) {
-            if (!line.points || line.points.length < 2) continue;
-            const path = line.points;
+            const path = (line.points || []).filter(marpromInFitArea);
+            if (path.length < 2) continue;
             const w = Number(line.strokeWidth) || 5;
+            const baseZ = Number(line.zIndex) || 2;
             if (line.isDashed) {
-              const dashedLine = new google.maps.Polyline({
+              const dotWalkLine = new GooglePolyline({
                 path: path,
                 strokeOpacity: 0,
                 icons: [
                   {
                     icon: {
-                      path: 'M 0,-1 0,1',
+                      path: GoogleSymbolPath.CIRCLE,
+                      fillColor: line.color || '#1A73E8',
+                      fillOpacity: 1.0,
+                      strokeColor: '#FFFFFF',
                       strokeOpacity: 0.95,
-                      strokeColor: line.color || '#38BDF8',
-                      strokeWeight: 3.8,
-                      scale: 3.5,
+                      strokeWeight: 1.6,
+                      scale: 4.2,
                     },
                     offset: '0',
-                    repeat: '14px',
+                    repeat: '13px',
                   },
                 ],
-                zIndex: 4,
+                zIndex: baseZ + 2,
                 map: st.map,
               });
-              st.polylines.push(dashedLine);
+              st.polylines.push(dotWalkLine);
             } else {
-              const casing = new google.maps.Polyline({
+              const casing = new GooglePolyline({
                 path: path,
-                strokeColor: '#FFFFFF',
-                strokeOpacity: 0.90,
-                strokeWeight: w + 3,
-                zIndex: 1,
+                strokeColor: line.casingColor || '#185ABC',
+                strokeOpacity: 0.95,
+                strokeWeight: w + 3.5,
+                zIndex: Math.max(1, baseZ - 1),
                 map: st.map,
               });
-              const mainLine = new google.maps.Polyline({
+              const mainLine = new GooglePolyline({
                 path: path,
-                strokeColor: line.color || '#C8102E',
-                strokeOpacity: 0.96,
+                strokeColor: line.color || '#4285F4',
+                strokeOpacity: 0.98,
                 strokeWeight: w,
-                zIndex: 2,
+                zIndex: baseZ,
                 map: st.map,
               });
               st.polylines.push(casing, mainLine);
@@ -694,9 +968,11 @@
         }
 
         // Diff markers in place by mk.id to eliminate flicker and lag during 2s ticks
-        const markerBounds = new google.maps.LatLngBounds();
+        const markerBounds = new GoogleLatLngBounds();
         let markerPointCount = 0;
-        const seenIds = new Set();
+        const focusMarkerBounds = new GoogleLatLngBounds();
+        let focusMarkerCount = 0;
+        const seenIds = new window.Set();
         for (const mk of (payload.markers || [])) {
           const id = String(mk.id);
           seenIds.add(id);
@@ -704,26 +980,79 @@
           if (marpromInFitArea(pos)) {
             markerBounds.extend(pos);
             markerPointCount++;
+            if (mk.badgeNumber || mk.isUserLocation) {
+              focusMarkerBounds.extend(pos);
+              focusMarkerCount++;
+            }
           }
           const sig = marpromMarkerSig(mk);
           const existing = st.markerMap.get(id);
           if (existing) {
-            existing.marker.setPosition(pos);
-            if (existing.sig !== sig) {
-              existing.marker.setIcon(marpromBuildMarkerIcon(mk));
-              existing.sig = sig;
+            if (existing.isAdvanced) {
+              existing.marker.position = pos;
+              if (existing.sig !== sig) {
+                existing.contentEl.innerHTML = marpromBuildMarkerHtml(mk, sig);
+                existing.sig = sig;
+              }
+              existing.marker.title = mk.label || '';
+            } else {
+              existing.marker.setPosition(pos);
+              if (existing.sig !== sig) {
+                existing.marker.setIcon(marpromBuildMarkerIcon(mk, sig, libs));
+                existing.sig = sig;
+              }
+              existing.marker.setTitle(mk.label || '');
             }
-            existing.marker.setTitle(mk.label || '');
             existing.label = mk.label || '';
-          } else {
-            const markerObj = new google.maps.Marker({
+          } else if (GoogleAdvancedMarker) {
+            const contentEl = document.createElement('div');
+            contentEl.innerHTML = marpromBuildMarkerHtml(mk, sig);
+            const markerObj = new GoogleAdvancedMarker({
               position: pos,
               map: st.map,
               title: mk.label || '',
-              icon: marpromBuildMarkerIcon(mk),
-              zIndex: mk.isUserLocation ? 40 : (mk.isBus ? 25 : 10),
+              content: contentEl,
+              zIndex: mk.isUserLocation ? 40 : (mk.badgeNumber ? 35 : (mk.isBus ? 25 : 10)),
+              gmpClickable: true,
             });
-            const entry = { marker: markerObj, sig: sig, label: mk.label || '', id: id };
+            const entry = {
+              marker: markerObj,
+              contentEl: contentEl,
+              isAdvanced: true,
+              sig: sig,
+              label: mk.label || '',
+              id: id,
+            };
+            const onTap = function(ev) {
+              if (ev && typeof ev.stopPropagation === 'function') {
+                ev.stopPropagation();
+              }
+              const viewId = hostEl.getAttribute('data-marprom-view-id') || '';
+              if (window.__marpromOnMarkerClick) {
+                window.__marpromOnMarkerClick(viewId, entry.id);
+              }
+              if (entry.label) {
+                st.infoWindow.setContent('<div style="font-weight:700;color:#0F172A;padding:4px 8px;font-size:13px">' + String(entry.label).replace(/</g, '&lt;') + '</div>');
+                st.infoWindow.open({ anchor: markerObj, map: st.map });
+              }
+            };
+            contentEl.addEventListener('click', onTap);
+            st.markerMap.set(id, entry);
+          } else if (GoogleLegacyMarker) {
+            const markerObj = new GoogleLegacyMarker({
+              position: pos,
+              map: st.map,
+              title: mk.label || '',
+              icon: marpromBuildMarkerIcon(mk, sig, libs),
+              zIndex: mk.isUserLocation ? 40 : (mk.badgeNumber ? 35 : (mk.isBus ? 25 : 10)),
+            });
+            const entry = {
+              marker: markerObj,
+              isAdvanced: false,
+              sig: sig,
+              label: mk.label || '',
+              id: id,
+            };
             markerObj.addListener('click', function() {
               const viewId = hostEl.getAttribute('data-marprom-view-id') || '';
               if (window.__marpromOnMarkerClick) {
@@ -739,15 +1068,24 @@
         }
         for (const [oldId, entry] of st.markerMap.entries()) {
           if (!seenIds.has(oldId)) {
-            entry.marker.setMap(null);
+            if (entry.isAdvanced) {
+              entry.marker.map = null;
+            } else {
+              entry.marker.setMap(null);
+            }
             st.markerMap.delete(oldId);
           }
         }
 
         if (!(payload.camera3D && payload.camera3D.active)) {
           const useRoute = routePointCount >= 2;
-          const fitCount = useRoute ? routePointCount : markerPointCount;
-          const fitBounds = useRoute ? routeBounds : markerBounds;
+          const useFocusPins = !useRoute && focusMarkerCount >= 2;
+          const fitCount = useRoute
+            ? routePointCount
+            : (useFocusPins ? focusMarkerCount : markerPointCount);
+          const fitBounds = useRoute
+            ? routeBounds
+            : (useFocusPins ? focusMarkerBounds : markerBounds);
           if (payload.fitBounds && fitCount >= 1) {
             if (st.pendingFit && st.pendingFit.sig === payload.fitSignature) {
               st.pendingFit.bounds = fitBounds;
@@ -765,13 +1103,18 @@
             const centerSig = Number(payload.center.lat).toFixed(5) + ',' + Number(payload.center.lng).toFixed(5) + ',' + (payload.zoom || 13.6);
             if (st.lastCenterSig !== centerSig) {
               st.map.setCenter(marpromSafeCenter(payload.center));
-              if (payload.zoom) st.map.setZoom(payload.zoom);
+              if (payload.zoom) {
+                st.map.setZoom(payload.zoom);
+                st.lastZoom = payload.zoom;
+              }
               st.lastCenterSig = centerSig;
             }
           }
         }
       } catch (e) {
-        // Ignore gracefully offline or if Maps JS is blocked.
+        if (window.console && typeof window.console.warn === 'function') {
+          window.console.warn('[MarpromMap]', e);
+        }
       }
     }
   </script>
