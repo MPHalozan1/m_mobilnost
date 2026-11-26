@@ -74,9 +74,9 @@ const List<_QuickDestinationChipData> _kQuickDestinations = [
 // AiTransitSearchPill widget                  *
 //**********************************************
 
-/// Prominent hands-free AI Voice + Text search pill powered by Gemini 2.5 Flash
-/// with Grounding with Google Maps + Live GPS, plus 1-tap destination chips
-/// and a clean switch to Manual Searchable Pickers.
+/// Prominent hands-free AI Voice + Text search pill powered by multi-model
+/// Gemini AI (3.8 Flash -> 4 Hydrogen failover) with Google Maps Grounding
+/// and Live GPS, plus 1-tap destination chips and a clean Manual mode toggle.
 class AiTransitSearchPill extends ConsumerStatefulWidget {
   /// Creates an [AiTransitSearchPill].
   const AiTransitSearchPill({

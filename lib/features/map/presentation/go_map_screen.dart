@@ -68,7 +68,9 @@ class _GoMapScreenState extends ConsumerState<GoMapScreen> {
   bool _desktopPanelOpen = true;
   bool _appliedInitialDeepLink = false;
   bool _isLateNightBanner = false;
+  bool _showDiagnostics = false;
   String? _errorMessage;
+  String? _errorDiagnostics;
 
   @override
   void initState() {
@@ -138,6 +140,8 @@ class _GoMapScreenState extends ConsumerState<GoMapScreen> {
     setState(() {
       _loading = true;
       _errorMessage = null;
+      _errorDiagnostics = null;
+      _showDiagnostics = false;
       _isLateNightBanner = false;
     });
 
@@ -178,6 +182,7 @@ class _GoMapScreenState extends ConsumerState<GoMapScreen> {
         _options = const [];
         _selectedOption = null;
         _errorMessage = e.localizedMessage(settings.localeCode);
+        _errorDiagnostics = e.technicalDetails;
       });
     } catch (e) {
       if (!mounted) return;
@@ -187,6 +192,7 @@ class _GoMapScreenState extends ConsumerState<GoMapScreen> {
         _errorMessage = isSl
             ? 'Napaka pri izračunu poti: $e'
             : 'Failed to plan route: $e';
+        _errorDiagnostics = e.toString();
       });
     } finally {
       if (mounted) setState(() => _loading = false);
@@ -227,6 +233,8 @@ class _GoMapScreenState extends ConsumerState<GoMapScreen> {
       _desktopPanelOpen = true;
       _isLateNightBanner =
           outcome.routes.isEmpty && _isLateNightHour(DateTime.now());
+      _showDiagnostics = false;
+      _errorDiagnostics = outcome.debugDetails;
       _errorMessage = outcome.errorMessage ??
           (_isLateNightBanner
               ? (isSl
@@ -290,7 +298,7 @@ class _GoMapScreenState extends ConsumerState<GoMapScreen> {
             GoogleMap3DPolylineData(
               id: 'go_leg_${option.id}_$i',
               points: leg.polyline,
-              color: isWalk ? const Color(0xFF38BDF8) : busColor,
+              color: isWalk ? const Color(0xFF3B82F6) : busColor,
               strokeWidth: isWalk ? 4.5 : 6.5,
               isDashed: isWalk,
             ),
@@ -547,6 +555,8 @@ class _GoMapScreenState extends ConsumerState<GoMapScreen> {
                           _options = const [];
                           _selectedOption = null;
                           _errorMessage = null;
+                          _errorDiagnostics = null;
+                          _showDiagnostics = false;
                           _isLateNightBanner = false;
                         });
                       },
@@ -598,6 +608,58 @@ class _GoMapScreenState extends ConsumerState<GoMapScreen> {
                                 : 'Check morning departures at 06:00',
                           ),
                         ),
+                      ],
+                      if (_errorDiagnostics != null &&
+                          _errorDiagnostics!.trim().isNotEmpty) ...[
+                        const SizedBox(height: 4),
+                        InkWell(
+                          borderRadius: BorderRadius.circular(8),
+                          onTap: () => setState(
+                            () => _showDiagnostics = !_showDiagnostics,
+                          ),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 4),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  _showDiagnostics
+                                      ? Icons.expand_less_rounded
+                                      : Icons.bug_report_outlined,
+                                  size: 15,
+                                  color: theme.colorScheme.onErrorContainer,
+                                ),
+                                const SizedBox(width: 6),
+                                Text(
+                                  isSl
+                                      ? 'Podrobnosti diagnostike'
+                                      : 'Debug / Diagnostics',
+                                  style: theme.textTheme.labelSmall?.copyWith(
+                                    color: theme.colorScheme.onErrorContainer,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                        if (_showDiagnostics)
+                          Container(
+                            width: double.infinity,
+                            margin: const EdgeInsets.only(top: 4),
+                            padding: const EdgeInsets.all(8),
+                            decoration: BoxDecoration(
+                              color: Colors.black.withValues(alpha: 0.14),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: SelectableText(
+                              _errorDiagnostics!,
+                              style: theme.textTheme.labelSmall?.copyWith(
+                                fontFamily: 'monospace',
+                                color: theme.colorScheme.onErrorContainer,
+                              ),
+                            ),
+                          ),
                       ],
                     ],
                   ),
@@ -776,11 +838,18 @@ class _GlassOverlayCard extends StatelessWidget {
         child: Container(
           padding: padding,
           decoration: BoxDecoration(
-            color: theme.colorScheme.surface.withValues(alpha: 0.90),
+            color: theme.colorScheme.surface.withValues(alpha: 0.94),
             borderRadius: BorderRadius.circular(20),
             border: Border.all(
-              color: theme.colorScheme.outlineVariant.withValues(alpha: 0.45),
+              color: theme.colorScheme.outlineVariant.withValues(alpha: 0.65),
             ),
+            boxShadow: const [
+              BoxShadow(
+                color: Colors.black26,
+                blurRadius: 16,
+                offset: Offset(0, 6),
+              ),
+            ],
           ),
           child: child,
         ),

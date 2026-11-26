@@ -159,7 +159,7 @@ class FirebaseAuthRepository implements AuthRepository {
     } on FirebaseAuthException catch (e) {
       throw AuthException(
         e.code,
-        e.message ?? 'Napaka pri prijavi (${e.code}).',
+        _mapFirebaseAuthMessage(e.code, e.message),
       );
     }
   }
@@ -180,10 +180,11 @@ class FirebaseAuthRepository implements AuthRepository {
         check.errorMessageSl ?? 'Neveljaven e-poštni naslov.',
       );
     }
-    if (password.length < 6) {
+    final policy = EmailValidator.evaluatePasswordPolicy(password);
+    if (!policy.isCompliant) {
       throw const AuthException(
-        'weak_password',
-        'Geslo mora vsebovati vsaj 6 znakov.',
+        'password-does-not-meet-requirements',
+        'Geslo mora vsebovati najmanj 6 znakov, 1 veliko črko (A–Z), 1 malo črko (a–z) in 1 številko (0–9).',
       );
     }
 
@@ -228,7 +229,7 @@ class FirebaseAuthRepository implements AuthRepository {
           e.code == 'email-already-in-use' ? 'email_already_exists' : e.code;
       throw AuthException(
         mappedCode,
-        e.message ?? 'Napaka pri registraciji (${e.code}).',
+        _mapFirebaseAuthMessage(e.code, e.message),
       );
     }
   }
@@ -288,7 +289,7 @@ class FirebaseAuthRepository implements AuthRepository {
     } on FirebaseAuthException catch (e) {
       throw AuthException(
         e.code,
-        e.message ?? 'Google prijava ni uspela (${e.code}).',
+        _mapFirebaseAuthMessage(e.code, e.message),
       );
     }
   }
@@ -372,8 +373,31 @@ class FirebaseAuthRepository implements AuthRepository {
     } on FirebaseAuthException catch (e) {
       throw AuthException(
         e.code,
-        e.message ?? 'Ponastavitev gesla ni uspela.',
+        _mapFirebaseAuthMessage(e.code, e.message),
       );
+    }
+  }
+
+  static String _mapFirebaseAuthMessage(String code, String? fallback) {
+    switch (code) {
+      case 'weak-password':
+      case 'password-does-not-meet-requirements':
+        return 'Geslo ne ustreza varnostnim zahtevam Firebase (min. 6 znakov, velika črka A–Z, mala črka a–z in številka 0–9).';
+      case 'email-already-in-use':
+        return 'Ta e-poštni naslov je že registriran. Prijavite se ali ponastavite geslo.';
+      case 'invalid-credential':
+      case 'wrong-password':
+      case 'user-not-found':
+        return 'Napačen e-poštni naslov ali geslo.';
+      case 'popup-closed-by-user':
+      case 'cancelled-popup-request':
+        return 'Google prijavno okno je bilo zaprto pred dokončanjem.';
+      case 'network-request-failed':
+        return 'Omrežna napaka pri povezavi s Firebase Auth. Preverite povezavo.';
+      case 'too-many-requests':
+        return 'Preveč poskusov prijave. Počakajte nekaj minut in poskusite znova.';
+      default:
+        return fallback ?? 'Napaka pri avtentikaciji ($code).';
     }
   }
 

@@ -136,8 +136,9 @@ class RoutePlanner {
             ? 'LESS_WALKING'
             : (effectiveFewerTransfers ? 'FEWER_TRANSFERS' : 'LESS_WALKING'),
         languageCode: localeCode,
-        departureTime: mode == TripTimeMode.arriveBy ? null : anchorTime,
-        arrivalTime: mode == TripTimeMode.arriveBy ? anchorTime : null,
+        // Never send departureTime on "Leave now" (Google rejects slightly-past timestamps)
+        departureTime: mode == TripTimeMode.departAt ? targetTime : null,
+        arrivalTime: mode == TripTimeMode.arriveBy ? targetTime : null,
         marpromLinesByCode: marpromByCode,
         marpromStops: allStops,
         liveFleet: liveFleet,

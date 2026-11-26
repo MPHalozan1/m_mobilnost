@@ -1,11 +1,12 @@
 //**********************************************
 // Google Routes API v2 Service (Marprom)      *
 // Handles real transit routes + road paths    *
-// for all Marprom bus lines with caching      *
+// with Web JS Directions fallback & caching   *
 //**********************************************
 
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
@@ -18,6 +19,7 @@ import '../config/api_keys_config.dart';
 import '../firebase/firestore_transit_service.dart';
 import '../utils/distance.dart';
 import 'marprom_route_fusion.dart';
+import 'web_directions_bridge.dart';
 
 //**********************************************
 // GoogleRouteResult model                     *
@@ -47,7 +49,7 @@ class GoogleRouteResult {
   /// Decoded road geometry points along the computed route.
   final List<LatLng> polylinePoints;
 
-  /// True when computed live by `routes.googleapis.com` or loaded from Firestore road cache.
+  /// True when computed live by `routes.googleapis.com` / Web Directions JS or Firestore cache.
   final bool isLiveApi;
 
   /// Raw Google encoded polyline string.
@@ -65,7 +67,7 @@ class GoogleRouteResult {
     return '$mins min';
   }
 
-  // Returns compact pretty-formatted summary of Google Routes payload metrics.
+  /// Returns compact pretty-formatted summary of Google Routes payload metrics.
   String toPrettyJsonSummary() => const JsonEncoder.withIndent('  ').convert({
         'distanceMeters': distanceMeters,
         'duration': rawDuration,
@@ -78,8 +80,8 @@ class GoogleRouteResult {
 // GoogleRoutesService implementation          *
 //**********************************************
 
-/// Unified cached client for Google Routes API v2 (`routes.googleapis.com`).
-/// Zero straight-line fallbacks: throws [RoutesApiException] on failures.
+/// Unified cached client for Google Routes API v2 (`routes.googleapis.com`)
+/// with automatic Web JS `google.maps.DirectionsService` CORS/referrer fallback.
 class GoogleRoutesService {
   /// Creates a [GoogleRoutesService] with optional key, Firestore cache, and client.
   GoogleRoutesService({
@@ -105,6 +107,8 @@ class GoogleRoutesService {
       'routes.legs.steps.travelMode,'
       'routes.legs.steps.staticDuration,'
       'routes.legs.steps.distanceMeters,'
+      'routes.legs.steps.startLocation,'
+      'routes.legs.steps.endLocation,'
       'routes.legs.steps.polyline.encodedPolyline,'
       'routes.legs.steps.navigationInstruction,'
       'routes.legs.steps.transitDetails';
@@ -126,11 +130,71 @@ class GoogleRoutesService {
   String get mapsApiKey => _mapsApiKeyOverride ?? ApiKeysConfig.googleMapsApiKey;
 
   //**********************************************
+  // Future-safe departureTime sanitizer         *
+  //**********************************************
+
+  /// Returns `null` for "leave now" (within 45s of [clockNow]) so Google Routes
+  /// never rejects a slightly-past timestamp with HTTP 400 INVALID_ARGUMENT, and
+  /// clamps future timestamps to at least `+60s`.
+  static DateTime? sanitizeFutureTimestamp(
+    DateTime? requested, {
+    DateTime? clockNow,
+  }) {
+    if (requested == null) return null;
+    final nowUtc = (clockNow ?? DateTime.now()).toUtc();
+    final reqUtc = requested.toUtc();
+    final diffSeconds = reqUtc.difference(nowUtc).inSeconds;
+    if (diffSeconds >= -45 && diffSeconds <= 45) {
+      return null;
+    }
+    if (diffSeconds < -45) {
+      return nowUtc.add(const Duration(seconds: 60));
+    }
+    return diffSeconds < 60
+        ? nowUtc.add(const Duration(seconds: 60))
+        : reqUtc;
+  }
+
+  /// Builds the compliant Routes API v2 `TRANSIT` JSON payload (exported for tests).
+  static Map<String, dynamic> buildTransitPayload({
+    required LatLng origin,
+    required LatLng destination,
+    String transitPreference = 'FEWER_TRANSFERS',
+    String languageCode = 'sl',
+    DateTime? departureTime,
+    DateTime? arrivalTime,
+    DateTime? clockNow,
+  }) {
+    final safeDep = sanitizeFutureTimestamp(departureTime, clockNow: clockNow);
+    final safeArr = safeDep == null
+        ? sanitizeFutureTimestamp(arrivalTime, clockNow: clockNow)
+        : null;
+
+    // IMPORTANT: Never include top-level routingPreference when travelMode is TRANSIT.
+    return <String, dynamic>{
+      'origin': _latLngPayload(origin),
+      'destination': _latLngPayload(destination),
+      'travelMode': 'TRANSIT',
+      'computeAlternativeRoutes': true,
+      'languageCode': languageCode,
+      'units': 'METRIC',
+      'transitPreferences': {
+        'allowedTravelModes': ['BUS'],
+        'routingPreference': transitPreference,
+      },
+      if (safeDep != null) 'departureTime': safeDep.toIso8601String(),
+      if (safeDep == null && safeArr != null)
+        'arrivalTime': safeArr.toIso8601String(),
+    };
+  }
+
+  //**********************************************
   // Compute optimal bus + walking trip routes   *
   //**********************************************
 
   /// Queries Google Routes API v2 `TRANSIT` (BUS only) for multi-bus and
-  /// sidewalk-walking trips across Maribor, fusing results with Marprom data.
+  /// sidewalk-walking trips across Maribor, falling back cleanly on Web to
+  /// `google.maps.DirectionsService` if REST encounters CORS/referrer blocks.
   Future<List<EnrichedTransitRoute>> computePassengerTransitRoutes({
     required LatLng origin,
     required LatLng destination,
@@ -144,8 +208,11 @@ class GoogleRoutesService {
     String originLabel = '',
     String destinationLabel = '',
   }) async {
-    final timeBucket = departureTime != null
-        ? '${departureTime.year}-${departureTime.month}-${departureTime.day}-${departureTime.hour}:${departureTime.minute ~/ 5}'
+    final safeDep = sanitizeFutureTimestamp(departureTime);
+    final safeArr =
+        safeDep == null ? sanitizeFutureTimestamp(arrivalTime) : null;
+    final timeBucket = safeDep != null
+        ? '${safeDep.year}-${safeDep.month}-${safeDep.day}-${safeDep.hour}:${safeDep.minute ~/ 5}'
         : 'now';
     final cacheKey =
         '${origin.latitude.toStringAsFixed(4)},${origin.longitude.toStringAsFixed(4)}|'
@@ -155,27 +222,20 @@ class GoogleRoutesService {
     final cached = _transitCache[cacheKey];
     if (cached != null) return cached;
 
-    // IMPORTANT: Never include top-level routingPreference when travelMode is TRANSIT
-    final payload = <String, dynamic>{
-      'origin': _latLngPayload(origin),
-      'destination': _latLngPayload(destination),
-      'travelMode': 'TRANSIT',
-      'computeAlternativeRoutes': true,
-      'languageCode': languageCode,
-      'units': 'METRIC',
-      'transitPreferences': {
-        'allowedTravelModes': ['BUS'],
-        'routingPreference': transitPreference,
-      },
-      if (departureTime != null)
-        'departureTime': departureTime.toUtc().toIso8601String(),
-      if (departureTime == null && arrivalTime != null)
-        'arrivalTime': arrivalTime.toUtc().toIso8601String(),
-    };
+    final payload = buildTransitPayload(
+      origin: origin,
+      destination: destination,
+      transitPreference: transitPreference,
+      languageCode: languageCode,
+      departureTime: departureTime,
+      arrivalTime: arrivalTime,
+    );
 
-    late final http.Response res;
+    final refTime = safeDep ?? safeArr ?? DateTime.now();
+    RoutesApiException? restFailure;
+
     try {
-      res = await _client
+      final res = await _client
           .post(
             Uri.parse(_endpoint),
             headers: {
@@ -186,35 +246,79 @@ class GoogleRoutesService {
             body: jsonEncode(payload),
           )
           .timeout(const Duration(seconds: 10));
+
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body) as Map<String, dynamic>;
+        final rawRoutes = (data['routes'] as List<dynamic>?) ?? const [];
+        final enriched = <EnrichedTransitRoute>[
+          for (var i = 0; i < rawRoutes.length; i++)
+            if (rawRoutes[i] is Map<String, dynamic>)
+              MarpromRouteFusion.enrichFromGoogleJson(
+                rawRoutes[i] as Map<String, dynamic>,
+                marpromLinesByCode: marpromLinesByCode,
+                marpromStops: marpromStops,
+                liveFleet: liveFleet,
+                originLabel: originLabel,
+                destinationLabel: destinationLabel,
+                referenceTime: refTime,
+                routeIndex: i,
+              ),
+        ];
+        _transitCache[cacheKey] = enriched;
+        return enriched;
+      }
+
+      restFailure = RoutesApiException(
+        res.statusCode,
+        res.body,
+        diagnostics: 'REST computeRoutes (TRANSIT) returned HTTP ${res.statusCode}',
+      );
     } catch (e) {
-      throw RoutesApiException(0, e.toString(), isNetworkError: true);
+      restFailure = RoutesApiException(
+        0,
+        e.toString(),
+        isNetworkError: true,
+        diagnostics: 'REST computeRoutes (TRANSIT) transport error: $e',
+      );
     }
 
-    if (res.statusCode != 200) {
-      throw RoutesApiException(res.statusCode, res.body);
+    // Automatic Web fallback using Google Maps JS SDK DirectionsService
+    if (kIsWeb && WebDirectionsBridge.isSupported) {
+      final jsRoutes = await WebDirectionsBridge.computeTransitRoutes(
+        origin: origin,
+        destination: destination,
+        transitPreference: transitPreference,
+        languageCode: languageCode,
+        departureTime: safeDep,
+        arrivalTime: safeArr,
+      );
+      if (jsRoutes != null) {
+        final enriched = <EnrichedTransitRoute>[
+          for (var i = 0; i < jsRoutes.length; i++)
+            MarpromRouteFusion.enrichFromWebDirectionsJson(
+              jsRoutes[i],
+              marpromLinesByCode: marpromLinesByCode,
+              marpromStops: marpromStops,
+              liveFleet: liveFleet,
+              originLabel: originLabel,
+              destinationLabel: destinationLabel,
+              referenceTime: refTime,
+              routeIndex: i,
+            ),
+        ];
+        _transitCache[cacheKey] = enriched;
+        return enriched;
+      }
+      throw RoutesApiException(
+        restFailure.statusCode,
+        restFailure.body,
+        isNetworkError: restFailure.isNetworkError,
+        diagnostics:
+            '${restFailure.diagnostics}\nWeb JS DirectionsService fallback returned null/denied.',
+      );
     }
 
-    final data = jsonDecode(res.body) as Map<String, dynamic>;
-    final rawRoutes = (data['routes'] as List<dynamic>?) ?? const [];
-
-    final refTime = departureTime ?? arrivalTime ?? DateTime.now();
-    final enriched = <EnrichedTransitRoute>[
-      for (var i = 0; i < rawRoutes.length; i++)
-        if (rawRoutes[i] is Map<String, dynamic>)
-          MarpromRouteFusion.enrichFromGoogleJson(
-            rawRoutes[i] as Map<String, dynamic>,
-            marpromLinesByCode: marpromLinesByCode,
-            marpromStops: marpromStops,
-            liveFleet: liveFleet,
-            originLabel: originLabel,
-            destinationLabel: destinationLabel,
-            referenceTime: refTime,
-            routeIndex: i,
-          ),
-    ];
-
-    _transitCache[cacheKey] = enriched;
-    return enriched;
+    throw restFailure;
   }
 
   //**********************************************
@@ -253,8 +357,8 @@ class GoogleRoutesService {
     if (orderedStops.length < 2) return orderedStops;
 
     final fullPath = <LatLng>[];
-    // Google Routes supports up to 25 intermediates; keep chunks safely <= 25 points
-    const maxChunkPoints = 25;
+    // Google Routes supports up to 25 intermediates; keep chunks safely <= 23 points
+    const maxChunkPoints = 23;
     var startIdx = 0;
 
     while (startIdx < orderedStops.length - 1) {
@@ -265,22 +369,21 @@ class GoogleRoutesService {
       final chunk = orderedStops.sublist(startIdx, endIdx + 1);
       final chunkOrigin = chunk.first;
       final chunkDest = chunk.last;
-      final intermediates = chunk.length > 2
-          ? chunk
-              .sublist(1, chunk.length - 1)
-              .map(
-                (p) => <String, dynamic>{
-                  'via': true,
-                  'location': {
-                    'latLng': {
-                      'latitude': p.latitude,
-                      'longitude': p.longitude,
-                    },
-                  },
-                },
-              )
-              .toList()
-          : <Map<String, dynamic>>[];
+      final chunkMid = chunk.length > 2
+          ? chunk.sublist(1, chunk.length - 1)
+          : const <LatLng>[];
+      final intermediates = [
+        for (final p in chunkMid)
+          <String, dynamic>{
+            'via': true,
+            'location': {
+              'latLng': {
+                'latitude': p.latitude,
+                'longitude': p.longitude,
+              },
+            },
+          },
+      ];
 
       final payload = <String, dynamic>{
         'origin': _latLngPayload(chunkOrigin),
@@ -290,9 +393,11 @@ class GoogleRoutesService {
         'units': 'METRIC',
       };
 
-      late final http.Response res;
+      List<LatLng>? chunkPath;
+      RoutesApiException? restFailure;
+
       try {
-        res = await _client
+        final res = await _client
             .post(
               Uri.parse(_endpoint),
               headers: {
@@ -303,26 +408,41 @@ class GoogleRoutesService {
               body: jsonEncode(payload),
             )
             .timeout(const Duration(seconds: 10));
-      } catch (e) {
-        throw RoutesApiException(0, e.toString(), isNetworkError: true);
-      }
 
-      if (res.statusCode != 200) {
-        throw RoutesApiException(res.statusCode, res.body);
-      }
-
-      final data = jsonDecode(res.body) as Map<String, dynamic>;
-      final routes = (data['routes'] as List<dynamic>?) ?? const [];
-      if (routes.isNotEmpty) {
-        final polyObj = routes.first['polyline'] as Map<String, dynamic>?;
-        final encoded = polyObj?['encodedPolyline'] as String?;
-        if (encoded != null && encoded.isNotEmpty) {
-          final decoded = decodeEncodedPolyline(encoded);
-          if (fullPath.isNotEmpty && decoded.isNotEmpty) {
-            fullPath.addAll(decoded.skip(1));
-          } else {
-            fullPath.addAll(decoded);
+        if (res.statusCode == 200) {
+          final data = jsonDecode(res.body) as Map<String, dynamic>;
+          final routes = (data['routes'] as List<dynamic>?) ?? const [];
+          if (routes.isNotEmpty) {
+            final polyObj = routes.first['polyline'] as Map<String, dynamic>?;
+            final encoded = polyObj?['encodedPolyline'] as String?;
+            if (encoded != null && encoded.isNotEmpty) {
+              chunkPath = decodeEncodedPolyline(encoded);
+            }
           }
+        } else {
+          restFailure = RoutesApiException(res.statusCode, res.body);
+        }
+      } catch (e) {
+        restFailure = RoutesApiException(0, e.toString(), isNetworkError: true);
+      }
+
+      if (chunkPath == null && kIsWeb && WebDirectionsBridge.isSupported) {
+        chunkPath = await WebDirectionsBridge.computeDrivingRoadPath(
+          origin: chunkOrigin,
+          destination: chunkDest,
+          waypoints: chunkMid,
+        );
+      }
+
+      if (chunkPath == null && restFailure != null) {
+        throw restFailure;
+      }
+
+      if (chunkPath != null && chunkPath.isNotEmpty) {
+        if (fullPath.isNotEmpty) {
+          fullPath.addAll(chunkPath.skip(1));
+        } else {
+          fullPath.addAll(chunkPath);
         }
       }
 
@@ -347,7 +467,7 @@ class GoogleRoutesService {
   //**********************************************
 
   /// Computes a sidewalk walking polyline via Google Routes API v2 (`WALK`)
-  /// with in-memory session caching. Never returns a synthetic straight line.
+  /// with Web JS fallback and in-memory session caching.
   Future<List<LatLng>> computeWalkPolyline(
     LatLng origin,
     LatLng destination,
@@ -365,9 +485,9 @@ class GoogleRoutesService {
       'units': 'METRIC',
     };
 
-    late final http.Response res;
+    RoutesApiException? restFailure;
     try {
-      res = await _client
+      final res = await _client
           .post(
             Uri.parse(_endpoint),
             headers: {
@@ -378,26 +498,38 @@ class GoogleRoutesService {
             body: jsonEncode(payload),
           )
           .timeout(const Duration(seconds: 9));
+
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body) as Map<String, dynamic>;
+        final routes = (data['routes'] as List<dynamic>?) ?? const [];
+        if (routes.isEmpty) return const <LatLng>[];
+        final encoded =
+            (routes.first['polyline'] as Map<String, dynamic>?)?['encodedPolyline']
+                as String?;
+        if (encoded == null || encoded.isEmpty) return const <LatLng>[];
+        final decoded = decodeEncodedPolyline(encoded);
+        if (decoded.length >= 2) {
+          _walkPolylineCache[key] = decoded;
+        }
+        return decoded;
+      }
+      restFailure = RoutesApiException(res.statusCode, res.body);
     } catch (e) {
-      throw RoutesApiException(0, e.toString(), isNetworkError: true);
+      restFailure = RoutesApiException(0, e.toString(), isNetworkError: true);
     }
 
-    if (res.statusCode != 200) {
-      throw RoutesApiException(res.statusCode, res.body);
+    if (kIsWeb && WebDirectionsBridge.isSupported) {
+      final jsWalk = await WebDirectionsBridge.computeWalkingPath(
+        origin: origin,
+        destination: destination,
+      );
+      if (jsWalk != null && jsWalk.length >= 2) {
+        _walkPolylineCache[key] = jsWalk;
+        return jsWalk;
+      }
     }
 
-    final data = jsonDecode(res.body) as Map<String, dynamic>;
-    final routes = (data['routes'] as List<dynamic>?) ?? const [];
-    if (routes.isEmpty) return const <LatLng>[];
-    final encoded =
-        (routes.first['polyline'] as Map<String, dynamic>?)?['encodedPolyline']
-            as String?;
-    if (encoded == null || encoded.isEmpty) return const <LatLng>[];
-    final decoded = decodeEncodedPolyline(encoded);
-    if (decoded.length >= 2) {
-      _walkPolylineCache[key] = decoded;
-    }
-    return decoded;
+    throw restFailure;
   }
 
   //**********************************************

@@ -5,12 +5,19 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
 import 'package:latlong2/latlong.dart';
+import 'package:m_mobilnost/core/accessibility/a11y_settings.dart';
 import 'package:m_mobilnost/core/auth/email_validator.dart';
 import 'package:m_mobilnost/core/config/download_links.dart';
 import 'package:m_mobilnost/core/firebase/firestore_transit_service.dart';
+import 'package:m_mobilnost/core/maps/google_map_models.dart';
+import 'package:m_mobilnost/core/network/gemini_transit_service.dart';
 import 'package:m_mobilnost/core/network/google_routes_service.dart';
+import 'package:m_mobilnost/core/network/marprom_route_fusion.dart';
 import 'package:m_mobilnost/core/widgets/bus_occupancy_cutaway.dart';
 import 'package:m_mobilnost/data/mock/mock_auth_repository.dart';
 import 'package:m_mobilnost/data/mock/mock_line_repository.dart';
@@ -20,10 +27,14 @@ import 'package:m_mobilnost/data/models/bus_position.dart';
 import 'package:m_mobilnost/data/models/occupancy.dart';
 import 'package:m_mobilnost/data/models/trip_plan.dart';
 import 'package:m_mobilnost/data/repositories/auth_repository.dart';
+import 'package:m_mobilnost/data/repositories/repository_providers.dart';
 import 'package:m_mobilnost/data/seed/seed_lines.dart';
 import 'package:m_mobilnost/data/seed/seed_stops.dart';
 import 'package:m_mobilnost/data/simulation/bus_simulator.dart';
+import 'package:m_mobilnost/features/account/presentation/profile_settings_screen.dart';
 import 'package:m_mobilnost/features/trip_planner/domain/route_planner.dart';
+import 'package:m_mobilnost/l10n/app_localizations.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   group('Marprom Realistic Capacities & BusOccupancyCutaway', () {
@@ -317,6 +328,244 @@ void main() {
         'updatedAt',
       };
       expect(payload.keys.toSet().difference(allowedKeys), isEmpty);
+    });
+  });
+
+  group('Gemini Failover, Google Routes Fixes, Always-Light Maps & Password Policy UI', () {
+    test('GeminiTransitService cycles free-tier models across Maps Grounding & JSON passes', () async {
+      expect(GeminiTransitService.freeTierModels, const [
+        'gemini-3.8-flash',
+        'gemini-3.6-flash',
+        'gemini-3.5-flash-lite',
+        'gemini-3.1-flash-lite',
+        'gemini-3-flash-preview',
+        'gemini-4-hydrogen',
+      ]);
+
+      final calledUrls = <String>[];
+      var attemptCount = 0;
+      final mockClient = MockClient((request) async {
+        calledUrls.add(request.url.path);
+        expect(request.headers['x-goog-api-key'], 'test-gemini-key');
+        attemptCount++;
+        // Fail first 7 attempts (all 6 models with Maps Grounding + first non-grounded)
+        if (attemptCount <= 7) {
+          return http.Response('rate limit / unsupported grounding', 429);
+        }
+        final reqJson = jsonDecode(request.body) as Map<String, dynamic>;
+        expect(reqJson.containsKey('tools'), isFalse);
+        expect(
+          (reqJson['generationConfig'] as Map<String, dynamic>)['responseMimeType'],
+          'application/json',
+        );
+        return http.Response(
+          jsonEncode({
+            'candidates': [
+              {
+                'content': {
+                  'parts': [
+                    {
+                      'text': jsonEncode({
+                        'originName': 'Moja lokacija',
+                        'originLat': 46.5547,
+                        'originLng': 15.6459,
+                        'destinationName': 'Europark Maribor',
+                        'destinationLat': 46.5535,
+                        'destinationLng': 15.6533,
+                        'wheelchairOnly': false,
+                        'routingPreference': 'FEWER_TRANSFERS',
+                        'shortReply': 'Najdena pot do Europarka.',
+                      }),
+                    },
+                  ],
+                },
+              },
+            ],
+          }),
+          200,
+        );
+      });
+
+      final service = GeminiTransitService(
+        geminiApiKey: 'test-gemini-key',
+        client: mockClient,
+      );
+      final resolved = await service.resolveQuery(
+        userQuery: 'Pelji me v Europark',
+        userLatLng: const LatLng(46.5547, 15.6459),
+        allowLocalFallback: false,
+      );
+
+      expect(calledUrls, hasLength(8));
+      expect(calledUrls.first, contains('gemini-3.8-flash'));
+      expect(resolved.resolvedByModel, 'gemini-3.6-flash');
+      expect(resolved.destinationName, 'Europark Maribor');
+      expect(resolved.destinationPosition.latitude, closeTo(46.5535, 0.001));
+    });
+
+    test('GeminiTransitService falls back to local Maribor matcher when all remote calls fail', () async {
+      final mockClient = MockClient(
+        (_) async => http.Response('service unavailable', 503),
+      );
+      final service = GeminiTransitService(
+        geminiApiKey: 'test-gemini-key',
+        client: mockClient,
+      );
+      final resolved = await service.resolveQuery(
+        userQuery: 'Najbližji nizkopodni bus do UKC Maribor',
+        userLatLng: const LatLng(46.557, 15.645),
+      );
+      expect(resolved.resolvedByModel, 'local-marprom-fallback');
+      expect(resolved.wheelchairOnly, isTrue);
+      expect(resolved.routingPreference, 'LESS_WALKING');
+      expect(resolved.destinationName, contains('UKC Maribor'));
+    });
+
+    test('GoogleRoutesService omits departureTime on leave-now & handles Web Directions fallback JSON', () {
+      final clock = DateTime.utc(2026, 11, 26, 10, 0, 0);
+      final nowPayload = GoogleRoutesService.buildTransitPayload(
+        origin: const LatLng(46.5547, 15.6459),
+        destination: const LatLng(46.5535, 15.6533),
+        departureTime: clock,
+        clockNow: clock,
+      );
+      expect(nowPayload.containsKey('departureTime'), isFalse);
+      expect(nowPayload.containsKey('routingPreference'), isFalse);
+
+      final pastPayload = GoogleRoutesService.buildTransitPayload(
+        origin: const LatLng(46.5547, 15.6459),
+        destination: const LatLng(46.5535, 15.6533),
+        departureTime: clock.subtract(const Duration(minutes: 5)),
+        clockNow: clock,
+      );
+      expect(pastPayload['departureTime'], isNotNull);
+      expect(
+        DateTime.parse(pastPayload['departureTime'] as String).isAfter(clock),
+        isTrue,
+      );
+
+      final webRoute = MarpromRouteFusion.enrichFromWebDirectionsJson({
+        'overviewPath': [
+          {'lat': 46.5575, 'lng': 15.6454},
+          {'lat': 46.5555, 'lng': 15.6490},
+          {'lat': 46.5535, 'lng': 15.6533},
+        ],
+        'legs': [
+          {
+            'distanceMeters': 1400,
+            'durationSeconds': 540,
+            'steps': [
+              {
+                'travelMode': 'WALKING',
+                'distanceMeters': 18,
+                'durationSeconds': 20,
+                'startLocation': {'lat': 46.5575, 'lng': 15.6454},
+                'endLocation': {'lat': 46.5576, 'lng': 15.6455},
+                'path': <dynamic>[],
+              },
+              {
+                'travelMode': 'TRANSIT',
+                'distanceMeters': 1382,
+                'durationSeconds': 480,
+                'path': [
+                  {'lat': 46.5576, 'lng': 15.6455},
+                  {'lat': 46.5535, 'lng': 15.6533},
+                ],
+                'transit': {
+                  'headsign': 'Pobrežje',
+                  'numStops': 3,
+                  'departureStop': {'name': 'Glavni trg'},
+                  'arrivalStop': {'name': 'Europark'},
+                  'line': {'shortName': '1', 'name': 'Linija G1'},
+                },
+              },
+            ],
+          },
+        ],
+      });
+
+      expect(webRoute.option.legs, hasLength(2));
+      expect(webRoute.option.legs.first.polyline, hasLength(2));
+      expect(webRoute.option.legs.last.lineCode, 'G1');
+      expect(webRoute.option.legs.last.vehicleCapacity, lessThanOrEqualTo(120));
+    });
+
+    test('Google Maps style preset remains locked to light in Dark & HighContrast modes', () async {
+      SharedPreferences.setMockInitialValues({
+        'a11y_theme_mode': 'dark',
+        'a11y_map_style': 'dark',
+      });
+      final prefs = await SharedPreferences.getInstance();
+      final notifier = A11ySettingsNotifier(prefs);
+      expect(notifier.state.themeMode, AppThemeChoice.dark);
+      expect(notifier.state.mapStylePreset, GoogleMapStylePreset.light);
+
+      await notifier.setThemeMode(AppThemeChoice.highContrast);
+      expect(notifier.state.mapStylePreset, GoogleMapStylePreset.light);
+
+      await notifier.setMapStylePreset(GoogleMapStylePreset.dark);
+      expect(notifier.state.mapStylePreset, GoogleMapStylePreset.light);
+    });
+
+    test('EmailValidator enforces Firebase 6-char + upper + lower + number password policy', () {
+      expect(EmailValidator.evaluatePasswordPolicy('abc12').isCompliant, isFalse);
+      expect(EmailValidator.evaluatePasswordPolicy('abcdef1').isCompliant, isFalse);
+      expect(EmailValidator.evaluatePasswordPolicy('ABCDEF1').isCompliant, isFalse);
+      expect(EmailValidator.evaluatePasswordPolicy('Abcdefg').isCompliant, isFalse);
+      expect(EmailValidator.evaluatePasswordPolicy('Abcde1').isCompliant, isTrue);
+    });
+
+    testWidgets('ProfileSettingsScreen renders live 4-rule checklist and gates Sign-Up button',
+        (tester) async {
+      SharedPreferences.setMockInitialValues({'a11y_locale_code': 'en'});
+      final prefs = await SharedPreferences.getInstance();
+      final auth = MockAuthRepository(
+        boxName: 'policy_ui_${DateTime.now().microsecondsSinceEpoch}',
+      );
+      addTearDown(auth.dispose);
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            sharedPreferencesProvider.overrideWithValue(prefs),
+            authRepositoryProvider.overrideWithValue(auth),
+          ],
+          child: const MaterialApp(
+            localizationsDelegates: AppLocalizations.localizationsDelegates,
+            supportedLocales: AppLocalizations.supportedLocales,
+            locale: Locale('en'),
+            home: ProfileSettingsScreen(),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // Forgot Password & Support links visible in Sign-In view
+      expect(find.text('Forgot Password?'), findsOneWidget);
+      expect(find.text('Help & Support'), findsOneWidget);
+
+      // Switch to Sign-Up mode (`l10n.accountSignUp` = "Create account")
+      await tester.tap(find.text('Create account'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('At least 6 characters'), findsOneWidget);
+      expect(find.text('1 uppercase letter (A–Z)'), findsOneWidget);
+      expect(find.text('1 lowercase letter (a–z)'), findsOneWidget);
+      expect(find.text('1 number (0–9)'), findsOneWidget);
+
+      final submitFinder = find.widgetWithText(FilledButton, 'Create account');
+      expect(tester.widget<FilledButton>(submitFinder).onPressed, isNull);
+
+      // Type non-compliant password -> button stays disabled
+      final pwdField = find.widgetWithText(TextFormField, 'Password');
+      await tester.enterText(pwdField, 'abcde1');
+      await tester.pumpAndSettle();
+      expect(tester.widget<FilledButton>(submitFinder).onPressed, isNull);
+
+      // Add uppercase letter -> all 4 rules pass and submit enables
+      await tester.enterText(pwdField, 'Abcde1');
+      await tester.pumpAndSettle();
+      expect(tester.widget<FilledButton>(submitFinder).onPressed, isNotNull);
     });
   });
 }

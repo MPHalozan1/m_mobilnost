@@ -95,6 +95,7 @@ class _LiveTrackerScreenState extends ConsumerState<LiveTrackerScreen> {
 
   void _selectBus(BusPosition bus) {
     _selectedVehicleId.value = bus.vehicleId;
+    _showRoutePolyline.value = true;
     if (!isFlutterTestEnvironment) {
       ref.read(googleLineRoutesProvider.notifier).ensureLineLoaded(bus.lineId);
     }

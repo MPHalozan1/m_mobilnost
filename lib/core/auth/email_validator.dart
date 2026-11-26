@@ -44,6 +44,42 @@ class EmailValidationResult {
       localeCode == 'sl' ? errorMessageSl : errorMessageEn;
 }
 
+/// Evaluates [password] against the active Firebase Auth Password Policy:
+/// >= 6 chars, 1 uppercase (A-Z), 1 lowercase (a-z), and 1 number (0-9).
+@immutable
+class PasswordPolicyCheck {
+  /// Creates a [PasswordPolicyCheck].
+  const PasswordPolicyCheck({
+    required this.hasMinLength,
+    required this.hasUppercase,
+    required this.hasLowercase,
+    required this.hasNumber,
+  });
+
+  /// True when `password.length >= 6`.
+  final bool hasMinLength;
+
+  /// True when at least 1 uppercase ASCII letter (`A-Z`) is present.
+  final bool hasUppercase;
+
+  /// True when at least 1 lowercase ASCII letter (`a-z`) is present.
+  final bool hasLowercase;
+
+  /// True when at least 1 digit (`0-9`) is present.
+  final bool hasNumber;
+
+  /// True when all 4 Firebase Authentication policy rules pass.
+  bool get isCompliant =>
+      hasMinLength && hasUppercase && hasLowercase && hasNumber;
+
+  /// Count of satisfied rules (`0..4`).
+  int get satisfiedCount =>
+      (hasMinLength ? 1 : 0) +
+      (hasUppercase ? 1 : 0) +
+      (hasLowercase ? 1 : 0) +
+      (hasNumber ? 1 : 0);
+}
+
 /// Password strength levels (`0..4`) for live registration feedback.
 @immutable
 class PasswordStrengthResult {
@@ -278,26 +314,27 @@ abstract final class EmailValidator {
     );
   }
 
-  /// Evaluates [password] strength on a `0..4` scale for UI feedback.
+  /// Evaluates [password] against the 4 Firebase Authentication policy rules.
+  static PasswordPolicyCheck evaluatePasswordPolicy(String password) {
+    return PasswordPolicyCheck(
+      hasMinLength: password.length >= 6,
+      hasUppercase: RegExp(r'[A-Z]').hasMatch(password),
+      hasLowercase: RegExp(r'[a-z]').hasMatch(password),
+      hasNumber: RegExp(r'[0-9]').hasMatch(password),
+    );
+  }
+
+  /// Evaluates [password] strength on a `0..4` scale aligned with Firebase policy.
   static PasswordStrengthResult evaluatePasswordStrength(String password) {
     if (password.isEmpty) {
       return const PasswordStrengthResult(
         score: 0,
-        labelSl: 'Vnesite geslo (min. 8 znakov)',
-        labelEn: 'Enter password (min. 8 chars)',
+        labelSl: 'Min. 6 znakov, A–Z, a–z in 0–9',
+        labelEn: 'Min. 6 chars, A–Z, a–z, and 0–9',
       );
     }
-    var score = 0;
-    if (password.length >= 8) score++;
-    if (RegExp(r'[A-Z]').hasMatch(password) &&
-        RegExp(r'[a-z]').hasMatch(password)) {
-      score++;
-    }
-    if (RegExp(r'[0-9]').hasMatch(password)) score++;
-    if (RegExp(r'[^A-Za-z0-9]').hasMatch(password) || password.length >= 12) {
-      score++;
-    }
-    score = score.clamp(1, 4);
+    final policy = evaluatePasswordPolicy(password);
+    final score = policy.satisfiedCount.clamp(1, 4);
 
     return switch (score) {
       1 => const PasswordStrengthResult(
@@ -307,18 +344,18 @@ abstract final class EmailValidator {
         ),
       2 => const PasswordStrengthResult(
           score: 2,
-          labelSl: 'Srednje geslo',
+          labelSl: 'Delno izpolnjeno',
           labelEn: 'Fair password',
         ),
       3 => const PasswordStrengthResult(
           score: 3,
-          labelSl: 'Dobro geslo',
-          labelEn: 'Good password',
+          labelSl: 'Skoraj pripravljeno',
+          labelEn: 'Almost compliant',
         ),
       _ => const PasswordStrengthResult(
           score: 4,
-          labelSl: 'Zelo močno geslo',
-          labelEn: 'Strong password',
+          labelSl: 'Ustreza pogojem Firebase ✓',
+          labelEn: 'Meets Firebase policy ✓',
         ),
     };
   }

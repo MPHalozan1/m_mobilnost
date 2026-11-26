@@ -368,8 +368,8 @@ class _ProfileSettingsScreenState extends ConsumerState<ProfileSettingsScreen> {
                         const SizedBox(height: 12),
                         Text(
                           isSl
-                              ? 'Tema (samodejno prilagodi tudi Google Zemljevid)'
-                              : 'Theme (automatically updates Google Maps style)',
+                              ? 'Tema aplikacije (Google Zemljevid ostaja vedno svetel)'
+                              : 'App Theme (Google Maps always stays crisp light)',
                           style: theme.textTheme.bodySmall,
                         ),
                         const SizedBox(height: 8),
@@ -556,6 +556,193 @@ class _ProfileSettingsScreenState extends ConsumerState<ProfileSettingsScreen> {
     );
   }
 
+  Future<void> _openForgotPasswordDialog(String localeCode) async {
+    final isSl = localeCode == 'sl';
+    final resetCtrl = TextEditingController(text: _emailCtrl.text.trim());
+    String? dialogError;
+    var sending = false;
+
+    final sentEmail = await showDialog<String>(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setDialogState) {
+            return AlertDialog(
+              title: Text(
+                isSl ? 'Ponastavitev gesla' : 'Reset Password',
+              ),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(
+                    isSl
+                        ? 'Vnesite svoj e-poštni naslov za prejem povezave za ponastavitev gesla (novo geslo mora vsebovati min. 6 znakov, A–Z, a–z in 0–9).'
+                        : 'Enter your email address to receive a password reset link (new password requires 6+ chars, A–Z, a–z, and 0–9).',
+                    style: Theme.of(ctx).textTheme.bodySmall,
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: resetCtrl,
+                    keyboardType: TextInputType.emailAddress,
+                    decoration: InputDecoration(
+                      labelText: isSl ? 'E-pošta' : 'Email',
+                      hintText: 'ime@gmail.com',
+                      border: const OutlineInputBorder(),
+                    ),
+                  ),
+                  if (dialogError != null) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      dialogError!,
+                      style: TextStyle(
+                        color: Theme.of(ctx).colorScheme.error,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: sending ? null : () => Navigator.of(ctx).pop(),
+                  child: Text(isSl ? 'Prekliči' : 'Cancel'),
+                ),
+                FilledButton(
+                  onPressed: sending
+                      ? null
+                      : () async {
+                          final email = resetCtrl.text.trim();
+                          final check = EmailValidator.validate(email);
+                          if (!check.isValid) {
+                            setDialogState(() {
+                              dialogError = check.localizedError(localeCode) ??
+                                  (isSl
+                                      ? 'Neveljaven e-poštni naslov.'
+                                      : 'Invalid email address.');
+                            });
+                            return;
+                          }
+                          setDialogState(() {
+                            sending = true;
+                            dialogError = null;
+                          });
+                          try {
+                            await ref
+                                .read(authRepositoryProvider)
+                                .resetPassword(check.normalizedEmail);
+                            if (ctx.mounted) {
+                              Navigator.of(ctx).pop(check.normalizedEmail);
+                            }
+                          } on AuthException catch (e) {
+                            setDialogState(() {
+                              sending = false;
+                              dialogError = e.message;
+                            });
+                          } catch (e) {
+                            setDialogState(() {
+                              sending = false;
+                              dialogError = e.toString();
+                            });
+                          }
+                        },
+                  child: sending
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
+                          ),
+                        )
+                      : Text(isSl ? 'Pošlji' : 'Send Email'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    resetCtrl.dispose();
+    if (sentEmail != null && mounted) {
+      setState(() {
+        _statusIsError = false;
+        _statusMessage = isSl
+            ? 'Povezava za ponastavitev gesla je bila poslana na $sentEmail.'
+            : 'Password reset email sent to $sentEmail.';
+      });
+    }
+  }
+
+  Future<void> _openSupportDialog(String localeCode) async {
+    final isSl = localeCode == 'sl';
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          title: Row(
+            children: [
+              const Icon(Icons.support_agent_rounded),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  isSl ? 'Pomoč in podpora Marprom' : 'Marprom Help & Support',
+                ),
+              ),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.email_outlined),
+                title: const Text('info@marprom.si'),
+                subtitle: Text(isSl ? 'Podpora po e-pošti' : 'Email support'),
+                onTap: () => unawaited(
+                  launchUrl(Uri.parse('mailto:info@marprom.si')),
+                ),
+              ),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.phone_outlined),
+                title: const Text('+386 2 80 50 910'),
+                subtitle: Text(
+                  isSl ? 'Prometni center Marprom' : 'Marprom Transit Center',
+                ),
+                onTap: () => unawaited(
+                  launchUrl(Uri.parse('tel:+38628050910')),
+                ),
+              ),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.language_rounded),
+                title: const Text('marprom.si/kontakt'),
+                subtitle: Text(
+                  isSl ? 'Uradna spletna podpora' : 'Official web contact',
+                ),
+                onTap: () => unawaited(
+                  launchUrl(
+                    Uri.parse('https://www.marprom.si/kontakt/'),
+                    mode: LaunchMode.externalApplication,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            FilledButton.tonal(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: Text(isSl ? 'Zapri' : 'Close'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   Widget _buildAccountSection(
     BuildContext context, {
     required ThemeData theme,
@@ -565,7 +752,9 @@ class _ProfileSettingsScreenState extends ConsumerState<ProfileSettingsScreen> {
     required String localeCode,
   }) {
     final isDemo = user == null || user.isAnonymousDemo;
+    final policy = EmailValidator.evaluatePasswordPolicy(_passwordCtrl.text);
     final strength = EmailValidator.evaluatePasswordStrength(_passwordCtrl.text);
+    final canSubmitAuth = !_busy && (!_isSignUp || policy.isCompliant);
 
     return Card(
       child: Padding(
@@ -825,10 +1014,19 @@ class _ProfileSettingsScreenState extends ConsumerState<ProfileSettingsScreen> {
                       obscureText: _obscurePassword,
                       onChanged: (_) => setState(() {}),
                       validator: (v) {
-                        if (v == null || v.length < 6) {
+                        final pwd = v ?? '';
+                        if (!_isSignUp) {
+                          if (pwd.length < 6) {
+                            return isSl
+                                ? 'Geslo mora imeti vsaj 6 znakov.'
+                                : 'Password must be at least 6 characters.';
+                          }
+                          return null;
+                        }
+                        if (!EmailValidator.evaluatePasswordPolicy(pwd).isCompliant) {
                           return isSl
-                              ? 'Geslo mora imeti vsaj 6 znakov.'
-                              : 'Password must be at least 6 characters.';
+                              ? 'Izpolnite vsa 4 pravila za geslo spodaj.'
+                              : 'Please satisfy all 4 password requirements below.';
                         }
                         return null;
                       },
@@ -849,28 +1047,33 @@ class _ProfileSettingsScreenState extends ConsumerState<ProfileSettingsScreen> {
                         ),
                       ),
                     ),
-                    if (_isSignUp && _passwordCtrl.text.isNotEmpty) ...[
-                      const SizedBox(height: 8),
-                      LinearProgressIndicator(
-                        value: (strength.score / 4.0).clamp(0.15, 1.0),
-                        color: strength.score >= 3
-                            ? Colors.green
-                            : (strength.score >= 2
-                                ? Colors.amber
-                                : theme.colorScheme.error),
+                    if (_isSignUp) ...[
+                      const SizedBox(height: 10),
+                      _PasswordPolicyChecklist(
+                        policy: policy,
+                        isSl: isSl,
+                        strength: strength,
                       ),
-                      const SizedBox(height: 4),
-                      Text(
-                        isSl ? strength.labelSl : strength.labelEn,
-                        style: theme.textTheme.labelSmall,
+                    ] else ...[
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: TextButton(
+                          onPressed: _busy
+                              ? null
+                              : () => _openForgotPasswordDialog(localeCode),
+                          child: Text(
+                            isSl ? 'Pozabljeno geslo?' : 'Forgot Password?',
+                          ),
+                        ),
                       ),
                     ],
-                    const SizedBox(height: 12),
+                    const SizedBox(height: 8),
                     SizedBox(
                       height: 48,
                       child: FilledButton(
-                        onPressed:
-                            _busy ? null : () => _submitEmailAuth(localeCode),
+                        onPressed: canSubmitAuth
+                            ? () => _submitEmailAuth(localeCode)
+                            : null,
                         child: _busy
                             ? const SizedBox(
                                 width: 18,
@@ -903,8 +1106,122 @@ class _ProfileSettingsScreenState extends ConsumerState<ProfileSettingsScreen> {
                 ),
               ),
             ],
+            const SizedBox(height: 8),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                onPressed: () => _openSupportDialog(localeCode),
+                icon: const Icon(Icons.help_outline_rounded, size: 18),
+                label: Text(
+                  isSl ? 'Pomoč in podpora Marprom' : 'Help & Support',
+                ),
+              ),
+            ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _PasswordPolicyChecklist extends StatelessWidget {
+  const _PasswordPolicyChecklist({
+    required this.policy,
+    required this.isSl,
+    required this.strength,
+  });
+
+  final PasswordPolicyCheck policy;
+  final bool isSl;
+  final PasswordStrengthResult strength;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.45),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: policy.isCompliant
+              ? Colors.green.withValues(alpha: 0.55)
+              : theme.colorScheme.outlineVariant,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          LinearProgressIndicator(
+            value: (strength.score / 4.0).clamp(0.05, 1.0),
+            color: policy.isCompliant
+                ? Colors.green
+                : (strength.score >= 2
+                    ? Colors.amber
+                    : theme.colorScheme.error),
+          ),
+          const SizedBox(height: 8),
+          _PolicyRuleRow(
+            satisfied: policy.hasMinLength,
+            label: isSl ? 'Vsaj 6 znakov' : 'At least 6 characters',
+          ),
+          _PolicyRuleRow(
+            satisfied: policy.hasUppercase,
+            label: isSl ? '1 velika črka (A–Z)' : '1 uppercase letter (A–Z)',
+          ),
+          _PolicyRuleRow(
+            satisfied: policy.hasLowercase,
+            label: isSl ? '1 mala črka (a–z)' : '1 lowercase letter (a–z)',
+          ),
+          _PolicyRuleRow(
+            satisfied: policy.hasNumber,
+            label: isSl ? '1 številka (0–9)' : '1 number (0–9)',
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PolicyRuleRow extends StatelessWidget {
+  const _PolicyRuleRow({
+    required this.satisfied,
+    required this.label,
+  });
+
+  final bool satisfied;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final color = satisfied ? Colors.green.shade600 : theme.colorScheme.onSurfaceVariant;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Row(
+        children: [
+          AnimatedSwitcher(
+            duration: const Duration(milliseconds: 180),
+            child: Icon(
+              satisfied
+                  ? Icons.check_circle_rounded
+                  : Icons.radio_button_unchecked_rounded,
+              key: ValueKey<bool>(satisfied),
+              size: 16,
+              color: color,
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              label,
+              style: theme.textTheme.labelSmall?.copyWith(
+                color: color,
+                fontWeight: satisfied ? FontWeight.w700 : FontWeight.w500,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

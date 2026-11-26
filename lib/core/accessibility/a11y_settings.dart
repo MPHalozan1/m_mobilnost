@@ -45,7 +45,7 @@ class A11ySettings {
     this.locationManualMode = false,
     this.onboardingDone = false,
     this.wheelchairAccessibleOnly = false,
-    this.mapStylePreset = GoogleMapStylePreset.dark,
+    this.mapStylePreset = GoogleMapStylePreset.light,
   });
 
   /// Active theme preference (dark by default, light, system, or highContrast).
@@ -263,13 +263,8 @@ class A11ySettingsNotifier extends StateNotifier<A11ySettings> {
       (e) => e.name == themeName,
       orElse: () => AppThemeChoice.dark,
     );
-    final mapStyleName = prefs.getString(_kMapStyle);
-    final mapStyle = GoogleMapStylePreset.values.firstWhere(
-      (e) => e.name == mapStyleName,
-      orElse: () => theme == AppThemeChoice.light
-          ? GoogleMapStylePreset.light
-          : GoogleMapStylePreset.dark,
-    );
+    // Google Maps must ALWAYS remain in crisp default Light Roadmap theme.
+    const mapStyle = GoogleMapStylePreset.light;
     return A11ySettings(
       themeMode: theme,
       localeCode: prefs.getString(_kLocaleCode) ?? 'sl',
@@ -292,22 +287,20 @@ class A11ySettingsNotifier extends StateNotifier<A11ySettings> {
     );
   }
 
-  /// Updates and persists [themeMode] (and syncs default map style unless satellite).
+  /// Updates and persists [themeMode] while keeping Google Maps always Light.
   Future<void> setThemeMode(AppThemeChoice value) async {
-    final syncedMapStyle = state.mapStylePreset == GoogleMapStylePreset.satellite
-        ? GoogleMapStylePreset.satellite
-        : (value == AppThemeChoice.light
-            ? GoogleMapStylePreset.light
-            : GoogleMapStylePreset.dark);
-    state = state.copyWith(themeMode: value, mapStylePreset: syncedMapStyle);
+    state = state.copyWith(
+      themeMode: value,
+      mapStylePreset: GoogleMapStylePreset.light,
+    );
     await _prefs?.setString(_kThemeMode, value.name);
-    await _prefs?.setString(_kMapStyle, syncedMapStyle.name);
+    await _prefs?.setString(_kMapStyle, GoogleMapStylePreset.light.name);
   }
 
-  /// Updates and persists [mapStylePreset].
+  /// Keeps Google Maps locked to [GoogleMapStylePreset.light].
   Future<void> setMapStylePreset(GoogleMapStylePreset value) async {
-    state = state.copyWith(mapStylePreset: value);
-    await _prefs?.setString(_kMapStyle, value.name);
+    state = state.copyWith(mapStylePreset: GoogleMapStylePreset.light);
+    await _prefs?.setString(_kMapStyle, GoogleMapStylePreset.light.name);
   }
 
   /// Updates and persists [wheelchairAccessibleOnly].

@@ -246,7 +246,7 @@
       script.defer = true;
       script.src = 'https://maps.googleapis.com/maps/api/js?key=' +
         encodeURIComponent(apiKey) +
-        '&v=weekly&libraries=maps,marker,geometry&loading=async';
+        '&v=weekly&libraries=maps,marker,geometry,routes&loading=async';
       document.head.appendChild(script);
     };
 
@@ -259,6 +259,132 @@
         await new Promise((r) => setTimeout(r, 90));
       }
       return false;
+    };
+
+    //**********************************************
+    // Web JS DirectionsService Fallback           *
+    // Eliminates browser CORS/referer 403 errors  *
+    //**********************************************
+    window.__marpromComputeJsDirections = async function(payloadJson) {
+      try {
+        const req = JSON.parse(payloadJson || '{}');
+        const ready = await window.__marpromWaitForGoogleMaps();
+        if (!ready) {
+          return JSON.stringify({ status: 'MAPS_NOT_READY', routes: [] });
+        }
+        await window.google.maps.importLibrary('routes');
+        const svc = new window.google.maps.DirectionsService();
+
+        const mode = req.mode || 'TRANSIT';
+        const options = {
+          origin: req.origin,
+          destination: req.destination,
+          travelMode: window.google.maps.TravelMode[mode] || mode,
+          unitSystem: window.google.maps.UnitSystem.METRIC,
+        };
+
+        if (mode === 'TRANSIT') {
+          options.provideRouteAlternatives = true;
+          const transitOpts = {
+            modes: [window.google.maps.TransitMode ? window.google.maps.TransitMode.BUS : 'BUS'],
+          };
+          if (req.routingPreference === 'LESS_WALKING') {
+            transitOpts.routingPreference = window.google.maps.TransitRoutePreference
+              ? window.google.maps.TransitRoutePreference.LESS_WALKING
+              : 'LESS_WALKING';
+          } else {
+            transitOpts.routingPreference = window.google.maps.TransitRoutePreference
+              ? window.google.maps.TransitRoutePreference.FEWER_TRANSFERS
+              : 'FEWER_TRANSFERS';
+          }
+          if (typeof req.departureTimeMs === 'number' && req.departureTimeMs > Date.now() + 45000) {
+            transitOpts.departureTime = new Date(req.departureTimeMs);
+          } else if (typeof req.arrivalTimeMs === 'number' && req.arrivalTimeMs > Date.now() + 45000) {
+            transitOpts.arrivalTime = new Date(req.arrivalTimeMs);
+          }
+          options.transitOptions = transitOpts;
+        } else if (mode === 'DRIVING' && Array.isArray(req.waypoints) && req.waypoints.length > 0) {
+          options.waypoints = req.waypoints.map(function(pt) {
+            return { location: { lat: pt.lat, lng: pt.lng }, stopover: false };
+          });
+          options.optimizeWaypoints = false;
+        }
+
+        const result = await new Promise(function(resolve) {
+          svc.route(options, function(response, status) {
+            resolve({ response: response, status: String(status || 'ERROR') });
+          });
+        });
+
+        if (result.status !== 'OK' || !result.response || !Array.isArray(result.response.routes)) {
+          return JSON.stringify({ status: result.status, routes: [] });
+        }
+
+        const serializedRoutes = result.response.routes.map(function(r) {
+          const overviewPath = (r.overview_path || []).map(function(pt) {
+            return { lat: pt.lat(), lng: pt.lng() };
+          });
+          const legs = (r.legs || []).map(function(leg) {
+            const steps = (leg.steps || []).map(function(st) {
+              const td = st.transit;
+              let transitJson = null;
+              if (td) {
+                const line = td.line || {};
+                const dep = td.departure_stop || {};
+                const arr = td.arrival_stop || {};
+                transitJson = {
+                  headsign: td.headsign || '',
+                  numStops: td.num_stops || null,
+                  departureTimeIso: td.departure_time && td.departure_time.value
+                    ? new Date(td.departure_time.value).toISOString()
+                    : null,
+                  arrivalTimeIso: td.arrival_time && td.arrival_time.value
+                    ? new Date(td.arrival_time.value).toISOString()
+                    : null,
+                  departureStop: {
+                    name: dep.name || 'Postajališče',
+                    location: dep.location ? { lat: dep.location.lat(), lng: dep.location.lng() } : null,
+                  },
+                  arrivalStop: {
+                    name: arr.name || 'Postajališče',
+                    location: arr.location ? { lat: arr.location.lat(), lng: arr.location.lng() } : null,
+                  },
+                  line: {
+                    shortName: line.short_name || '',
+                    name: line.name || '',
+                  },
+                };
+              }
+              return {
+                travelMode: String(st.travel_mode || ''),
+                distanceMeters: st.distance ? st.distance.value : 0,
+                durationSeconds: st.duration ? st.duration.value : 0,
+                instructions: st.instructions || '',
+                startLocation: st.start_location
+                  ? { lat: st.start_location.lat(), lng: st.start_location.lng() }
+                  : null,
+                endLocation: st.end_location
+                  ? { lat: st.end_location.lat(), lng: st.end_location.lng() }
+                  : null,
+                path: (st.path || []).map(function(pt) {
+                  return { lat: pt.lat(), lng: pt.lng() };
+                }),
+                transit: transitJson,
+              };
+            });
+            return {
+              distanceMeters: leg.distance ? leg.distance.value : 0,
+              durationSeconds: leg.duration ? leg.duration.value : 0,
+              steps: steps,
+            };
+          });
+          return { overviewPath: overviewPath, legs: legs };
+        });
+
+        return JSON.stringify({ status: 'OK', routes: serializedRoutes });
+      } catch (e) {
+        return JSON.stringify({ status: 'EXCEPTION', error: String(e), routes: [] });
+      }
     };
 
     // Maribor service area: points outside it (e.g. 0,0 placeholders) are
@@ -418,19 +544,10 @@
         if (!ready) return;
         const { Map, InfoWindow } = await window.google.maps.importLibrary('maps');
 
-        const targetScheme = payload.stylePreset === 'light' ? 'LIGHT' : 'DARK';
-        if (hostEl.__marpromState && hostEl.__marpromState.colorScheme !== targetScheme) {
-          // Recreate vector map when switching between dark and light map themes
-          if (hostEl.__marpromState.resizeObserver) {
-            hostEl.__marpromState.resizeObserver.disconnect();
-          }
-          hostEl.innerHTML = '';
-          hostEl.__marpromState = null;
-        }
-
+        const targetScheme = 'LIGHT';
         if (!hostEl.__marpromState) {
           const cs = google.maps.ColorScheme
-            ? (targetScheme === 'LIGHT' ? google.maps.ColorScheme.LIGHT : google.maps.ColorScheme.DARK)
+            ? google.maps.ColorScheme.LIGHT
             : undefined;
           const mapOptions = {
             center: marpromSafeCenter(payload.center),
@@ -442,7 +559,7 @@
             heading: payload.heading || 0,
             tiltInteractionEnabled: true,
             headingInteractionEnabled: true,
-            mapTypeId: payload.mapTypeId || 'roadmap',
+            mapTypeId: 'roadmap',
             mapTypeControl: false,
             streetViewControl: false,
             fullscreenControl: false,
@@ -477,8 +594,8 @@
         }
 
         const st = hostEl.__marpromState;
-        if (payload.mapTypeId && st.map.getMapTypeId() !== payload.mapTypeId) {
-          st.map.setMapTypeId(payload.mapTypeId);
+        if (st.map.getMapTypeId() !== 'roadmap') {
+          st.map.setMapTypeId('roadmap');
         }
 
         if (payload.camera3D && payload.camera3D.active) {

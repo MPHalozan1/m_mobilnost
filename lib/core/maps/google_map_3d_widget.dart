@@ -3,10 +3,8 @@
 //**********************************************
 
 import 'package:flutter/material.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:latlong2/latlong.dart';
 
-import '../accessibility/a11y_settings.dart';
 import '../utils/geo.dart';
 import 'google_map_models.dart';
 import 'google_web_views.dart';
@@ -17,8 +15,8 @@ import 'google_web_views.dart';
 
 /// Displays Google Maps 2D and tilted 3D Vector Maps (`tilt: 60°`, `zoom: 17.2`,
 /// smoothed bearing interpolation along Google Routes road polylines, 3D buildings)
-/// with isolated `ValueNotifier` playback controls and zero overflow.
-class GoogleMap3DWidget extends ConsumerStatefulWidget {
+/// always in crisp Light Roadmap theme, with isolated `ValueNotifier` controls.
+class GoogleMap3DWidget extends StatefulWidget {
   /// Creates a [GoogleMap3DWidget].
   const GoogleMap3DWidget({
     super.key,
@@ -93,10 +91,10 @@ class GoogleMap3DWidget extends ConsumerStatefulWidget {
   final ValueChanged<String>? onMarkerTap;
 
   @override
-  ConsumerState<GoogleMap3DWidget> createState() => _GoogleMap3DWidgetState();
+  State<GoogleMap3DWidget> createState() => _GoogleMap3DWidgetState();
 }
 
-class _GoogleMap3DWidgetState extends ConsumerState<GoogleMap3DWidget>
+class _GoogleMap3DWidgetState extends State<GoogleMap3DWidget>
     with SingleTickerProviderStateMixin {
   late final ValueNotifier<bool> _use3D;
   late final ValueNotifier<double> _scrubProgress;
@@ -236,9 +234,7 @@ class _GoogleMap3DWidgetState extends ConsumerState<GoogleMap3DWidget>
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final mapStyle = ref.watch(
-      a11ySettingsProvider.select((s) => s.mapStylePreset),
-    );
+    const mapStyle = GoogleMapStylePreset.light;
     final viewportWidth = MediaQuery.sizeOf(context).width;
     final showLiveCounter = widget.showStatusPill &&
         viewportWidth >= 520 &&

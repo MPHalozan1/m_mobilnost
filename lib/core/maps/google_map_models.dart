@@ -5,15 +5,15 @@
 import 'package:flutter/material.dart';
 import 'package:latlong2/latlong.dart';
 
-/// Supported Google Maps visual styles selectable in user preferences.
+/// Supported Google Maps visual styles (locked to default crisp Light Roadmap).
 enum GoogleMapStylePreset {
-  /// Sleek dark vector/styled map (default).
-  dark,
-
-  /// Clean light road map.
+  /// Clean light Google road map (always active).
   light,
 
-  /// Hybrid satellite + road labels.
+  /// Legacy enum value kept for storage compatibility (renders as light).
+  dark,
+
+  /// Legacy enum value kept for storage compatibility (renders as light).
   satellite,
 }
 

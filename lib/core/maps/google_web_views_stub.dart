@@ -6,12 +6,12 @@ import 'dart:io' show Platform;
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart' as gmaps;
 import 'package:latlong2/latlong.dart' hide Path;
 
 import 'google_map_models.dart';
-import 'google_maps_config.dart';
 
 /// True when executing inside `flutter test` on the Dart VM.
 bool get isFlutterTestEnvironment =>
@@ -148,13 +148,16 @@ Set<gmaps.Polyline> _buildMobilePolylines(
       result.add(
         gmaps.Polyline(
           polylineId: gmaps.PolylineId(line.id),
-          color: line.color,
-          width: w,
+          color: const Color(0xFF3B82F6),
+          width: kIsWeb ? 4 : 5,
           zIndex: 4,
-          patterns: [
-            gmaps.PatternItem.dash(18),
-            gmaps.PatternItem.gap(12),
-          ],
+          geodesic: false,
+          patterns: kIsWeb
+              ? const <gmaps.PatternItem>[]
+              : <gmaps.PatternItem>[
+                  gmaps.PatternItem.dash(14),
+                  gmaps.PatternItem.gap(10),
+                ],
           points: gPoints,
         ),
       );
@@ -162,9 +165,13 @@ Set<gmaps.Polyline> _buildMobilePolylines(
       result.add(
         gmaps.Polyline(
           polylineId: gmaps.PolylineId('${line.id}_casing'),
-          color: Colors.white.withValues(alpha: 0.92),
+          color: Colors.white.withValues(alpha: 0.94),
           width: w + 3,
           zIndex: 1,
+          geodesic: false,
+          jointType: gmaps.JointType.round,
+          startCap: gmaps.Cap.roundCap,
+          endCap: gmaps.Cap.roundCap,
           points: gPoints,
         ),
       );
@@ -174,6 +181,10 @@ Set<gmaps.Polyline> _buildMobilePolylines(
           color: line.color,
           width: w,
           zIndex: 2,
+          geodesic: false,
+          jointType: gmaps.JointType.round,
+          startCap: gmaps.Cap.roundCap,
+          endCap: gmaps.Cap.roundCap,
           points: gPoints,
         ),
       );
@@ -233,7 +244,7 @@ class GoogleMap3DPlatformView extends StatefulWidget {
     this.polylines = const [],
     this.markers = const [],
     this.camera3DActive = false,
-    this.stylePreset = GoogleMapStylePreset.dark,
+    this.stylePreset = GoogleMapStylePreset.light,
     this.fitBounds = false,
     this.fitSignature = '',
     this.forceCenter = false,
@@ -377,14 +388,8 @@ class _GoogleMap3DPlatformViewState extends State<GoogleMap3DPlatformView> {
         tilt: widget.tilt.clamp(0.0, 67.5),
         bearing: widget.heading,
       ),
-      mapType: widget.stylePreset == GoogleMapStylePreset.satellite
-          ? gmaps.MapType.hybrid
-          : gmaps.MapType.normal,
-      style: widget.stylePreset == GoogleMapStylePreset.dark
-          ? GoogleMapsConfig.darkMapStyleJson
-          : (widget.stylePreset == GoogleMapStylePreset.light
-              ? GoogleMapsConfig.lightMapStyleJson
-              : null),
+      // Google Maps ALWAYS stays in default crisp Light Roadmap theme
+      mapType: gmaps.MapType.normal,
       buildingsEnabled: true,
       tiltGesturesEnabled: true,
       rotateGesturesEnabled: true,
@@ -414,7 +419,7 @@ class GoogleRoadMapPlatformView extends StatefulWidget {
     this.fitBounds = false,
     this.fitSignature = '',
     this.forceCenter = false,
-    this.stylePreset = GoogleMapStylePreset.dark,
+    this.stylePreset = GoogleMapStylePreset.light,
     this.onMarkerTap,
   });
 
@@ -546,14 +551,8 @@ class _GoogleRoadMapPlatformViewState extends State<GoogleRoadMapPlatformView> {
         target: gmaps.LatLng(widget.center.latitude, widget.center.longitude),
         zoom: widget.zoom,
       ),
-      mapType: widget.stylePreset == GoogleMapStylePreset.satellite
-          ? gmaps.MapType.hybrid
-          : gmaps.MapType.normal,
-      style: widget.stylePreset == GoogleMapStylePreset.dark
-          ? GoogleMapsConfig.darkMapStyleJson
-          : (widget.stylePreset == GoogleMapStylePreset.light
-              ? GoogleMapsConfig.lightMapStyleJson
-              : null),
+      // Google Maps ALWAYS stays in default crisp Light Roadmap theme
+      mapType: gmaps.MapType.normal,
       buildingsEnabled: true,
       tiltGesturesEnabled: true,
       rotateGesturesEnabled: true,

@@ -53,7 +53,7 @@ class GoogleMap3DPlatformView extends StatefulWidget {
     this.polylines = const [],
     this.markers = const [],
     this.camera3DActive = false,
-    this.stylePreset = GoogleMapStylePreset.dark,
+    this.stylePreset = GoogleMapStylePreset.light,
     this.fitBounds = false,
     this.fitSignature = '',
     this.forceCenter = false,
@@ -181,7 +181,7 @@ class GoogleRoadMapPlatformView extends StatefulWidget {
     this.fitBounds = false,
     this.fitSignature = '',
     this.forceCenter = false,
-    this.stylePreset = GoogleMapStylePreset.dark,
+    this.stylePreset = GoogleMapStylePreset.light,
     this.onMarkerTap,
   });
 
@@ -291,7 +291,7 @@ web.HTMLDivElement _createIsolatedMapHost(String viewId) {
   host.style.width = '100%';
   host.style.height = '100%';
   host.style.position = 'relative';
-  host.style.backgroundColor = '#161315';
+  host.style.backgroundColor = '#F1F5F9';
   host.style.setProperty('touch-action', 'none');
   host.style.setProperty('overscroll-behavior', 'contain');
   host.setAttribute('data-marprom-map', '1');
@@ -369,16 +369,12 @@ void _syncHostWithGoogleJs({
     return '#${rgb.toRadixString(16).padLeft(6, '0')}';
   }
 
-  final mapTypeId = switch (stylePreset) {
-    GoogleMapStylePreset.satellite => 'hybrid',
-    GoogleMapStylePreset.dark || GoogleMapStylePreset.light => 'roadmap',
-  };
-
+  // Google Maps ALWAYS stays in crisp default Light Roadmap theme
   final payload = <String, dynamic>{
     'apiKey': GoogleMapsConfig.webApiKey,
     'mapId': GoogleMapsConfig.vectorMapId,
-    'mapTypeId': mapTypeId,
-    'stylePreset': stylePreset.name,
+    'mapTypeId': 'roadmap',
+    'stylePreset': 'light',
     'center': {'lat': center.latitude, 'lng': center.longitude},
     'zoom': zoom,
     'tilt': tilt.clamp(0.0, 65.0),
